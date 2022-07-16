@@ -10,3 +10,9 @@
 [submodule "ext/optixu"]
 	path = ext/optixu
 	url = https://github.com/shocker-0x15/OptiX_Utility.git
+[submodule "ext/assimp"]
+	path = ext/assimp
+	url = https://github.com/assimp/assimp.git
+[submodule "ext/cubd"]
+	path = ext/cubd
+	url = https://github.com/shocker-0x15/CUBd.git
