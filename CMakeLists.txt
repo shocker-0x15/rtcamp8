@@ -129,6 +129,9 @@ function(set_common_sources)
         "non-essentials/ext/imgui" REGULAR_EXPRESSION
         "../ext/imgui/backends/.*\.(h|cpp)$")
     source_group(
+        "non-essentials/ext/cubd" REGULAR_EXPRESSION
+        "../ext/cubd/[^/]*\.h$")
+    source_group(
         "non-essentials/ext" REGULAR_EXPRESSION
         "../ext/[^/]*\.(h|hpp|c|cc|cpp)$")
 endfunction()
