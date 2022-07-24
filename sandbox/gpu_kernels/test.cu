@@ -1,4 +1,4 @@
-#include "../../common/basic_types.h"
+#include "../../common/common_renderer_types.h"
 
 using Point3D = rtc8::Point3DTemplate<float>;
 using Vector3D = rtc8::Vector3DTemplate<float>;

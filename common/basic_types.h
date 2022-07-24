@@ -1,5 +1,250 @@
 ﻿#include "common_shared.h"
 
+#if !defined(__CUDA_ARCH__) && !defined(__CUDACC__)
+// ----------------------------------------------------------------
+// JP: CUDAビルトインに対応する型・関数をホスト側で定義しておく。
+// EN: Define types and functions on the host corresponding to CUDA built-ins.
+
+struct alignas(8) int2 {
+    int32_t x, y;
+    constexpr int2(int32_t v = 0) : x(v), y(v) {}
+    constexpr int2(int32_t xx, int32_t yy) : x(xx), y(yy) {}
+};
+inline constexpr int2 make_int2(int32_t x, int32_t y) {
+    return int2(x, y);
+}
+struct int3 {
+    int32_t x, y, z;
+    constexpr int3(int32_t v = 0) : x(v), y(v), z(v) {}
+    constexpr int3(int32_t xx, int32_t yy, int32_t zz) : x(xx), y(yy), z(zz) {}
+};
+inline constexpr int3 make_int3(int32_t x, int32_t y, int32_t z) {
+    return int3(x, y, z);
+}
+struct alignas(16) int4 {
+    int32_t x, y, z, w;
+    constexpr int4(int32_t v = 0) : x(v), y(v), z(v), w(v) {}
+    constexpr int4(int32_t xx, int32_t yy, int32_t zz, int32_t ww) : x(xx), y(yy), z(zz), w(ww) {}
+};
+inline constexpr int4 make_int4(int32_t x, int32_t y, int32_t z, int32_t w) {
+    return int4(x, y, z, w);
+}
+struct alignas(8) uint2 {
+    uint32_t x, y;
+    constexpr uint2(uint32_t v = 0) : x(v), y(v) {}
+    constexpr uint2(uint32_t xx, uint32_t yy) : x(xx), y(yy) {}
+};
+inline constexpr uint2 make_uint2(uint32_t x, uint32_t y) {
+    return uint2(x, y);
+}
+struct uint3 {
+    uint32_t x, y, z;
+    constexpr uint3(uint32_t v = 0) : x(v), y(v), z(v) {}
+    constexpr uint3(uint32_t xx, uint32_t yy, uint32_t zz) : x(xx), y(yy), z(zz) {}
+};
+inline constexpr uint3 make_uint3(uint32_t x, uint32_t y, uint32_t z) {
+    return uint3(x, y, z);
+}
+struct uint4 {
+    uint32_t x, y, z, w;
+    constexpr uint4(uint32_t v = 0) : x(v), y(v), z(v), w(v) {}
+    constexpr uint4(uint32_t xx, uint32_t yy, uint32_t zz, uint32_t ww) : x(xx), y(yy), z(zz), w(ww) {}
+};
+inline constexpr uint4 make_uint4(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+    return uint4(x, y, z, w);
+}
+struct alignas(8) float2 {
+    float x, y;
+    constexpr float2(float v = 0) : x(v), y(v) {}
+    constexpr float2(float xx, float yy) : x(xx), y(yy) {}
+};
+inline float2 make_float2(float x, float y) {
+    return float2(x, y);
+}
+struct float3 {
+    float x, y, z;
+    constexpr float3(float v = 0) : x(v), y(v), z(v) {}
+    constexpr float3(float xx, float yy, float zz) : x(xx), y(yy), z(zz) {}
+    constexpr float3(const uint3 &v) :
+        x(static_cast<float>(v.x)), y(static_cast<float>(v.y)), z(static_cast<float>(v.z)) {}
+};
+inline constexpr float3 make_float3(float x, float y, float z) {
+    return float3(x, y, z);
+}
+struct alignas(16) float4 {
+    float x, y, z, w;
+    constexpr float4(float v = 0) : x(v), y(v), z(v), w(v) {}
+    constexpr float4(float xx, float yy, float zz, float ww) : x(xx), y(yy), z(zz), w(ww) {}
+    constexpr float4(const float3 &xyz, float ww) : x(xyz.x), y(xyz.y), z(xyz.z), w(ww) {}
+};
+inline constexpr float4 make_float4(float x, float y, float z, float w) {
+    return float4(x, y, z, w);
+}
+
+// END: Define types and functions on the host corresponding to CUDA built-ins.
+// ----------------------------------------------------------------
+#endif
+
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 make_int2(const float2 &v) {
+    return make_int2(static_cast<int32_t>(v.x), static_cast<int32_t>(v.y));
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 make_int2(const int3 &v) {
+    return make_int2(v.x, v.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 make_int2(const uint3 &v) {
+    return make_int2(static_cast<int32_t>(v.x), static_cast<int32_t>(v.y));
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE bool operator==(const int2 &v0, const int2 &v1) {
+    return v0.x == v1.x && v0.y == v1.y;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE bool operator!=(const int2 &v0, const int2 &v1) {
+    return v0.x != v1.x || v0.y != v1.y;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE bool operator==(const int2 &v0, const uint2 &v1) {
+    return v0.x == v1.x && v0.y == v1.y;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE bool operator!=(const int2 &v0, const uint2 &v1) {
+    return v0.x != v1.x || v0.y != v1.y;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator+(const int2 &v0, const uint2 &v1) {
+    return make_uint2(v0.x + v1.x, v0.y + v1.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 operator+(const int2 &v0, const int2 &v1) {
+    return make_int2(v0.x + v1.x, v0.y + v1.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 operator*(const int2 &v0, const int2 &v1) {
+    return make_int2(v0.x * v1.x, v0.y * v1.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 operator*(uint32_t s, const int2 &v) {
+    return make_int2(s * v.x, s * v.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 operator*(const int2 &v, uint32_t s) {
+    return make_int2(s * v.x, s * v.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 &operator*=(int2 &v0, const int2 &v1) {
+    v0.x *= v1.x;
+    v0.y *= v1.y;
+    return v0;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 &operator*=(int2 &v, uint32_t s) {
+    v.x *= s;
+    v.y *= s;
+    return v;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 operator/(const int2 &v0, const int2 &v1) {
+    return make_int2(v0.x / v1.x, v0.y / v1.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator/(const int2 &v0, const uint2 &v1) {
+    return make_uint2(v0.x / v1.x, v0.y / v1.y);
+}
+
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 make_uint2(const float2 &v) {
+    return make_uint2(static_cast<uint32_t>(v.x), static_cast<uint32_t>(v.y));
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 make_uint2(const int3 &v) {
+    return make_uint2(static_cast<uint32_t>(v.x), static_cast<uint32_t>(v.y));
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 make_uint2(const uint3 &v) {
+    return make_uint2(v.x, v.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE bool operator==(const uint2 &v0, const uint2 &v1) {
+    return v0.x == v1.x && v0.y == v1.y;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE bool operator!=(const uint2 &v0, const uint2 &v1) {
+    return v0.x != v1.x || v0.y != v1.y;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE bool operator==(const uint2 &v0, const int2 &v1) {
+    return v0.x == v1.x && v0.y == v1.y;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE bool operator!=(const uint2 &v0, const int2 &v1) {
+    return v0.x != v1.x || v0.y != v1.y;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator+(const uint2 &v0, const uint2 &v1) {
+    return make_uint2(v0.x + v1.x, v0.y + v1.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 &operator+=(uint2 &v, uint32_t s) {
+    v.x += s;
+    v.y += s;
+    return v;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator-(const uint2 &v, uint32_t s) {
+    return make_uint2(v.x - s, v.y - s);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 &operator-=(uint2 &v, uint32_t s) {
+    v.x -= s;
+    v.y -= s;
+    return v;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator*(const uint2 &v0, const uint2 &v1) {
+    return make_uint2(v0.x * v1.x, v0.y * v1.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator*(float s, const uint2 &v) {
+    return make_uint2(s * v.x, s * v.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator*(const uint2 &v, float s) {
+    return make_uint2(s * v.x, s * v.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 &operator*=(uint2 &v0, const uint2 &v1) {
+    v0.x *= v1.x;
+    v0.y *= v1.y;
+    return v0;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 &operator*=(uint2 &v, uint32_t s) {
+    v.x *= s;
+    v.y *= s;
+    return v;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator/(const uint2 &v0, const uint2 &v1) {
+    return make_uint2(v0.x / v1.x, v0.y / v1.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator/(const uint2 &v0, const int2 &v1) {
+    return make_uint2(v0.x / v1.x, v0.y / v1.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator/(const uint2 &v, uint32_t s) {
+    return make_uint2(v.x / s, v.y / s);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 &operator/=(uint2 &v, uint32_t s) {
+    v.x /= s;
+    v.y /= s;
+    return v;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator%(const uint2 &v0, const uint2 &v1) {
+    return make_uint2(v0.x % v1.x, v0.y % v1.y);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator<<(const uint2 &v, uint32_t s) {
+    return make_uint2(v.x << s, v.y << s);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 &operator<<=(uint2 &v, uint32_t s) {
+    v = v << s;
+    return v;
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator>>(const uint2 &v, uint32_t s) {
+    return make_uint2(v.x >> s, v.y >> s);
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 &operator>>=(uint2 &v, uint32_t s) {
+    v = v >> s;
+    return v;
+}
+
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 min(const uint2 &v0, const uint2 &v1) {
+#if !defined(__CUDA_ARCH__)
+    using std::min;
+#endif
+    return make_uint2(min(v0.x, v1.x), min(v0.y, v1.y));
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 max(const uint2 &v0, const uint2 &v1) {
+#if !defined(__CUDA_ARCH__)
+    using std::max;
+#endif
+    return make_uint2(max(v0.x, v1.x), max(v0.y, v1.y));
+}
+
+CUDA_COMMON_FUNCTION CUDA_INLINE float3 operator-(const float3 &v) {
+    return make_float3(-v.x, -v.y, -v.z);
+}
+
+
+
 namespace rtc8 {
 
 #if __cplusplus < 202002L
@@ -44,7 +289,7 @@ CUDA_COMMON_FUNCTION CUDA_INLINE bool isfinite(RealType x) {
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE void sincos(RealType angle, RealType* s, RealType* c) {
 #if defined(__CUDA_ARCH__)
-    sincos(x, s, c);
+    sincosf(angle, s, c);
 #else
     *s = std::sin(angle);
     *c = std::cos(angle);
@@ -54,14 +299,75 @@ CUDA_COMMON_FUNCTION CUDA_INLINE void sincos(RealType angle, RealType* s, RealTy
 
 
 template <typename RealType>
+struct CompensatedSum {
+    RealType result;
+    RealType comp;
+
+    CUDA_COMMON_FUNCTION constexpr CompensatedSum(const RealType &value = RealType(0)) :
+        result(value), comp(static_cast<RealType>(0)) { };
+
+    CUDA_COMMON_FUNCTION constexpr CompensatedSum &operator=(const RealType &value) {
+        result = value;
+        comp = 0;
+        return *this;
+    }
+
+    CUDA_COMMON_FUNCTION constexpr CompensatedSum &operator+=(const RealType &value) {
+        RealType cInput = value - comp;
+        RealType sumTemp = result + cInput;
+        comp = (sumTemp - result) - cInput;
+        result = sumTemp;
+        return *this;
+    }
+
+    CUDA_COMMON_FUNCTION constexpr operator RealType() const { return result; };
+};
+
+
+
+template <typename RealType>
+struct Point3DTemplate;
+
+template <typename RealType, bool isNormal = false>
+struct Vector3DTemplate;
+
+template <typename RealType>
+using Normal3DTemplate = Vector3DTemplate<RealType, true>;
+
+template <typename RealType>
+struct Vector4DTemplate;
+
+template <typename RealType>
+struct TexCoord2DTemplate;
+
+template <typename RealType>
+struct Matrix3x3Template;
+
+template <typename RealType>
+struct Matrix4x4Template;
+
+template <typename RealType>
+struct QuaternionTemplate;
+
+template <typename RealType>
+struct BoundingBox3DTemplate;
+
+template <typename RealType>
+struct RGBTemplate;
+
+
+
+template <typename RealType>
 struct Point3DTemplate {
     RealType x, y, z;
-    
+
     CUDA_COMMON_FUNCTION Point3DTemplate() {}
     CUDA_COMMON_FUNCTION constexpr Point3DTemplate(RealType v) :
         x(v), y(v), z(v) {}
     CUDA_COMMON_FUNCTION constexpr Point3DTemplate(RealType xx, RealType yy, RealType zz) :
         x(xx), y(yy), z(zz) {}
+    CUDA_COMMON_FUNCTION constexpr explicit Point3DTemplate(const float3 &p) :
+        x(p.x), y(p.y), z(p.z) {}
 
     CUDA_COMMON_FUNCTION constexpr Point3DTemplate operator+() const {
         return *this;
@@ -76,6 +382,10 @@ struct Point3DTemplate {
         z += v.z;
         return *this;
     }
+    CUDA_COMMON_FUNCTION constexpr Point3DTemplate &operator+=(const Vector3DTemplate<RealType> &v);
+    CUDA_COMMON_FUNCTION constexpr Point3DTemplate &operator+=(const Normal3DTemplate<RealType> &v);
+    CUDA_COMMON_FUNCTION constexpr Point3DTemplate &operator-=(const Vector3DTemplate<RealType> &v);
+    CUDA_COMMON_FUNCTION constexpr Point3DTemplate &operator-=(const Normal3DTemplate<RealType> &v);
     CUDA_COMMON_FUNCTION constexpr Point3DTemplate &operator*=(RealType s) {
         x *= s;
         y *= s;
@@ -109,6 +419,10 @@ struct Point3DTemplate {
         return isfinite(x) && isfinite(y) && isfinite(z);
     }
 
+    CUDA_COMMON_FUNCTION /*constexpr*/ float3 toNativeType() const {
+        return make_float3(x, y, z);
+    }
+
     CUDA_COMMON_FUNCTION CUDA_INLINE static constexpr Point3DTemplate Zero() {
         return Point3DTemplate(0, 0, 0);
     }
@@ -116,16 +430,18 @@ struct Point3DTemplate {
 
 
 
-template <typename RealType, bool isNormal = false>
+template <typename RealType, bool isNormal>
 struct Vector3DTemplate {
     RealType x, y, z;
-    
+
     CUDA_COMMON_FUNCTION Vector3DTemplate() {}
     CUDA_COMMON_FUNCTION constexpr Vector3DTemplate(RealType v) :
         x(v), y(v), z(v) {}
     CUDA_COMMON_FUNCTION constexpr Vector3DTemplate(RealType xx, RealType yy, RealType zz) :
         x(xx), y(yy), z(zz) {}
     CUDA_COMMON_FUNCTION constexpr explicit Vector3DTemplate(const Point3DTemplate<RealType> &v) :
+        x(v.x), y(v.y), z(v.z) {}
+    CUDA_COMMON_FUNCTION constexpr explicit Vector3DTemplate(const float3 &v) :
         x(v.x), y(v.y), z(v.z) {}
     CUDA_COMMON_FUNCTION constexpr Vector3DTemplate(const Vector3DTemplate<RealType, !isNormal> &v) :
         x(v.x), y(v.y), z(v.z) {}
@@ -210,12 +526,13 @@ struct Vector3DTemplate {
 
     // References
     // Building an Orthonormal Basis, Revisited
-    CUDA_COMMON_FUNCTION constexpr void makeCoordinateSystem(Vector3DTemplate* vx, Vector3DTemplate* vy) const {
+    CUDA_COMMON_FUNCTION constexpr void makeCoordinateSystem(
+        Vector3DTemplate<RealType, false>* vx, Vector3DTemplate<RealType, false>* vy) const {
         RealType sign = z >= 0 ? 1 : -1;
         RealType a = -1 / (sign + z);
         RealType b = x * y * a;
-        *vx = Vector3DTemplate(1 + sign * x * x * a, sign * b, -sign * x);
-        *vy = Vector3DTemplate(b, sign + y * y * a, -y);
+        *vx = Vector3DTemplate<RealType, false>(1 + sign * x * x * a, sign * b, -sign * x);
+        *vy = Vector3DTemplate<RealType, false>(b, sign + y * y * a, -y);
     }
     CUDA_COMMON_FUNCTION /*constexpr*/ void toPolarZUp(RealType* theta, RealType* phi) const {
         *theta = std::acos(clamp(z, static_cast<RealType>(-1), static_cast<RealType>(1)));
@@ -226,6 +543,10 @@ struct Vector3DTemplate {
         *theta = std::acos(clamp(y, static_cast<RealType>(-1), static_cast<RealType>(1)));
         *phi = std::fmod(static_cast<RealType>(std::atan2(-x, z) + 2 * pi_v<RealType>),
                          static_cast<RealType>(2 * pi_v<RealType>));
+    }
+
+    CUDA_COMMON_FUNCTION /*constexpr*/ float3 toNativeType() const {
+        return make_float3(x, y, z);
     }
 
     CUDA_COMMON_FUNCTION CUDA_INLINE static constexpr Vector3DTemplate Zero() {
@@ -258,15 +579,12 @@ struct Vector3DTemplate {
     }
 };
 
-template <typename RealType>
-using Normal3DTemplate = Vector3DTemplate<RealType, true>;
-
 
 
 template <typename RealType>
 struct Vector4DTemplate {
     RealType x, y, z, w;
-    
+
     CUDA_COMMON_FUNCTION Vector4DTemplate() {}
     CUDA_COMMON_FUNCTION constexpr Vector4DTemplate(RealType v) :
         x(v), y(v), z(v), w(v) {}
@@ -977,6 +1295,42 @@ struct QuaternionTemplate {
 // Point3D operators and functions
 
 template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> &Point3DTemplate<RealType>::operator+=(
+    const Vector3DTemplate<RealType> &v) {
+    x += v.x;
+    y += v.y;
+    z += v.z;
+    return *this;
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> &Point3DTemplate<RealType>::operator+=(
+    const Normal3DTemplate<RealType> &v) {
+    x += v.x;
+    y += v.y;
+    z += v.z;
+    return *this;
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> &Point3DTemplate<RealType>::operator-=(
+    const Vector3DTemplate<RealType> &v) {
+    x -= v.x;
+    y -= v.y;
+    z -= v.z;
+    return *this;
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> &Point3DTemplate<RealType>::operator-=(
+    const Normal3DTemplate<RealType> &v) {
+    x -= v.x;
+    y -= v.y;
+    z -= v.z;
+    return *this;
+}
+
+template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr bool operator==(
     const Point3DTemplate<RealType> &va, const Point3DTemplate<RealType> &vb) {
     return va.x == vb.x && va.y == vb.y && va.z == vb.z;
@@ -997,9 +1351,41 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> operator+(
 }
 
 template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> operator+(
+    const Point3DTemplate<RealType> &va, const Vector3DTemplate<RealType> &vb) {
+    Point3DTemplate<RealType> ret = va;
+    ret += vb;
+    return ret;
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> operator+(
+    const Point3DTemplate<RealType> &va, const Normal3DTemplate<RealType> &vb) {
+    Point3DTemplate<RealType> ret = va;
+    ret += vb;
+    return ret;
+}
+
+template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType> operator-(
     const Point3DTemplate<RealType> &va, const Point3DTemplate<RealType> &vb) {
     Vector3DTemplate<RealType> ret(va.x - vb.x, va.y - vb.y, va.z - vb.z);
+    return ret;
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> operator-(
+    const Point3DTemplate<RealType> &va, const Vector3DTemplate<RealType> &vb) {
+    Point3DTemplate<RealType> ret = va;
+    ret -= vb;
+    return ret;
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> operator-(
+    const Point3DTemplate<RealType> &va, const Normal3DTemplate<RealType> &vb) {
+    Point3DTemplate<RealType> ret = va;
+    ret -= vb;
     return ret;
 }
 
@@ -1042,7 +1428,7 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> max(
 }
 
 template <typename RealType>
-CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> squaredDistance(
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RealType squaredDistance(
     const Point3DTemplate<RealType> &va, const Point3DTemplate<RealType> &vb) {
     using rtc8::min;
     Vector3DTemplate<RealType> vector = vb - va;
@@ -1057,181 +1443,115 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> squaredDist
 // ----------------------------------------------------------------
 // Vector3D/Normal3D operators and functions
 
-#define DEFINE_VECTOR3_OP_EQ(TypeA, TypeB) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr bool operator==( \
-        const TypeA ## <RealType> &va, const TypeB ## <RealType> &vb) { \
-        return va.x == vb.x && va.y == vb.y && va.z == vb.z; \
-    }
-DEFINE_VECTOR3_OP_EQ(Vector3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_OP_EQ(Normal3DTemplate, Normal3DTemplate);
-#undef DEFINE_VECTOR3_OP_EQ
+template <typename RealType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr bool operator==(
+    const Vector3DTemplate<RealType, isNormal> &va, const Vector3DTemplate<RealType, isNormal> &vb) {
+    return va.x == vb.x && va.y == vb.y && va.z == vb.z;
+}
 
-#define DEFINE_VECTOR3_OP_NEQ(TypeA, TypeB) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr bool operator!=( \
-        const TypeA ## <RealType> &va, const TypeB ## <RealType> &vb) { \
-        return va.x != vb.x || va.y != vb.y || va.z != vb.z; \
-    }
-DEFINE_VECTOR3_OP_NEQ(Vector3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_OP_NEQ(Normal3DTemplate, Normal3DTemplate);
-#undef DEFINE_VECTOR3_OP_NEQ
+template <typename RealType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr bool operator!=(
+    const Vector3DTemplate<RealType, isNormal> &va, const Vector3DTemplate<RealType, isNormal> &vb) {
+    return va.x != vb.x || va.y != vb.y || va.z != vb.z;
+}
 
-#define DEFINE_VECTOR3_OP_ADD(TypeA, TypeB) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr TypeA ## <RealType> operator+( \
-        const TypeA ## <RealType> &va, const TypeB ## <RealType> &vb) { \
-        TypeA ## <RealType> ret = va; \
-        ret += vb; \
-        return ret; \
-    }
-DEFINE_VECTOR3_OP_ADD(Vector3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_OP_ADD(Normal3DTemplate, Normal3DTemplate);
-#undef DEFINE_VECTOR3_OP_ADD
+template <typename RealType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, isNormal> operator+(
+    const Vector3DTemplate<RealType, isNormal> &va, const Vector3DTemplate<RealType, isNormal> &vb) {
+    Vector3DTemplate<RealType, isNormal> ret = va;
+    ret += vb;
+    return ret;
+}
 
-#define DEFINE_VECTOR3_OP_SUBTRACT(TypeA, TypeB) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr TypeA ## <RealType> operator-( \
-        const TypeA ## <RealType> &va, const TypeB ## <RealType> &vb) { \
-        TypeA ## <RealType> ret = va; \
-        ret -= vb; \
-        return ret; \
-    }
-DEFINE_VECTOR3_OP_SUBTRACT(Vector3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_OP_SUBTRACT(Normal3DTemplate, Normal3DTemplate);
-#undef DEFINE_VECTOR3_OP_SUBTRACT
+template <typename RealType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, isNormal> operator-(
+    const Vector3DTemplate<RealType, isNormal> &va, const Vector3DTemplate<RealType, isNormal> &vb) {
+    Vector3DTemplate<RealType, isNormal> ret = va;
+    ret -= vb;
+    return ret;
+}
 
-#define DEFINE_VECTOR3_OP_MULTIPLY(TypeA, TypeB) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr TypeA ## <RealType> operator*( \
-        const TypeA ## <RealType> &va, const TypeB ## <RealType> &vb) { \
-        TypeA ## <RealType> ret = va; \
-        ret *= vb; \
-        return ret; \
-    }
-DEFINE_VECTOR3_OP_MULTIPLY(Vector3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_OP_MULTIPLY(Normal3DTemplate, Normal3DTemplate);
-#undef DEFINE_VECTOR3_OP_MULTIPLY
+template <typename RealType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, isNormal> operator*(
+    const Vector3DTemplate<RealType, isNormal> &va, const Vector3DTemplate<RealType, isNormal> &vb) {
+    Vector3DTemplate<RealType, isNormal> ret = va;
+    ret *= vb;
+    return ret;
+}
 
-#define DEFINE_VECTOR3_OP_MULTIPLY_SCALAR(Type) \
-    template <typename RealType, typename ScalarType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Type ## <RealType> operator*( \
-        const Type ## <RealType> &v, ScalarType s) { \
-        Type ## <RealType> ret = v; \
-        ret *= s; \
-        return ret; \
-    }
-DEFINE_VECTOR3_OP_MULTIPLY_SCALAR(Vector3DTemplate);
-DEFINE_VECTOR3_OP_MULTIPLY_SCALAR(Normal3DTemplate);
-#undef DEFINE_VECTOR3_OP_MULTIPLY_SCALAR
+template <typename RealType, typename ScalarType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, isNormal> operator*(
+    const Vector3DTemplate<RealType, isNormal> &v, ScalarType s) {
+    Vector3DTemplate<RealType, isNormal> ret = v;
+    ret *= s;
+    return ret;
+}
 
-#define DEFINE_VECTOR3_OP_MULTIPLY_SCALAR(Type) \
-    template <typename ScalarType, typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Type ## <RealType> operator*( \
-        ScalarType s, const Type ## <RealType> &v) { \
-        Type ## <RealType> ret = v; \
-        ret *= s; \
-        return ret; \
-    }
-DEFINE_VECTOR3_OP_MULTIPLY_SCALAR(Vector3DTemplate);
-DEFINE_VECTOR3_OP_MULTIPLY_SCALAR(Normal3DTemplate);
-#undef DEFINE_VECTOR3_OP_MULTIPLY_SCALAR
+template <typename ScalarType, typename RealType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, isNormal> operator*(
+    ScalarType s, const Vector3DTemplate<RealType, isNormal> &v) {
+    Vector3DTemplate<RealType, isNormal> ret = v;
+    ret *= s;
+    return ret;
+}
 
-#define DEFINE_VECTOR3_OP_DIVIDE(TypeA, TypeB) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr TypeA ## <RealType> operator/( \
-        const TypeA ## <RealType> &va, const TypeB ## <RealType> &vb) { \
-        TypeA ## <RealType> ret = va; \
-        ret /= vb; \
-        return ret; \
-    }
-DEFINE_VECTOR3_OP_DIVIDE(Vector3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_OP_DIVIDE(Normal3DTemplate, Normal3DTemplate);
-#undef DEFINE_VECTOR3_OP_DIVIDE
+template <typename RealType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, isNormal> operator/(
+    const Vector3DTemplate<RealType, isNormal> &va, const Vector3DTemplate<RealType, isNormal> &vb) {
+    Vector3DTemplate<RealType, isNormal> ret = va;
+    ret /= vb;
+    return ret;
+}
 
-#define DEFINE_VECTOR3_OP_DIVIDE_SCALAR(Type) \
-    template <typename RealType, typename ScalarType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Type ## <RealType> operator/( \
-        const Type ## <RealType> &v, ScalarType s) { \
-        Type ## <RealType> ret = v; \
-        ret /= s; \
-        return ret; \
-    }
-DEFINE_VECTOR3_OP_DIVIDE_SCALAR(Vector3DTemplate);
-DEFINE_VECTOR3_OP_DIVIDE_SCALAR(Normal3DTemplate);
-#undef DEFINE_VECTOR3_OP_DIVIDE_SCALAR
+template <typename RealType, typename ScalarType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, isNormal> operator/(
+    const Vector3DTemplate<RealType, isNormal> &v, ScalarType s) {
+    Vector3DTemplate<RealType, isNormal> ret = v;
+    ret /= s;
+    return ret;
+}
 
-#define DEFINE_VECTOR3_NORMALIZE(Type) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ Type ## <RealType> normalize( \
-        const Type ## <RealType> &v) { \
-        RealType l = v.length(); \
-        return v / l; \
-    }
-DEFINE_VECTOR3_NORMALIZE(Vector3DTemplate);
-DEFINE_VECTOR3_NORMALIZE(Normal3DTemplate);
-#undef DEFINE_VECTOR3_NORMALIZE
+template <typename RealType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ Vector3DTemplate<RealType, isNormal> normalize(
+    const Vector3DTemplate<RealType, isNormal> &v) {
+    RealType l = v.length();
+    return v / l;
+}
 
-#define DEFINE_VECTOR3_DOT(TypeA, TypeB) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RealType dot( \
-        const TypeA ## <RealType> &va, const TypeB ## <RealType> &vb) { \
-        return va.x * vb.x + va.y * vb.y + va.z * vb.z; \
-    }
-DEFINE_VECTOR3_DOT(Vector3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_DOT(Vector3DTemplate, Normal3DTemplate);
-DEFINE_VECTOR3_DOT(Normal3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_DOT(Normal3DTemplate, Normal3DTemplate);
-#undef DEFINE_VECTOR3_DOT
+template <typename RealType, bool aIsNormal, bool bIsNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RealType dot(
+    const Vector3DTemplate<RealType, aIsNormal> &va, const Vector3DTemplate<RealType, bIsNormal> &vb) {
+    return va.x * vb.x + va.y * vb.y + va.z * vb.z;
+}
 
-#define DEFINE_VECTOR3_ABSDOT(TypeA, TypeB) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ RealType absDot( \
-        const TypeA ## <RealType> &va, const TypeB ## <RealType> &vb) { \
-        return std::fabs(dot(va, vb)); \
-    }
-DEFINE_VECTOR3_ABSDOT(Vector3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_ABSDOT(Vector3DTemplate, Normal3DTemplate);
-DEFINE_VECTOR3_ABSDOT(Normal3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_ABSDOT(Normal3DTemplate, Normal3DTemplate);
-#undef DEFINE_VECTOR3_ABSDOT
+template <typename RealType, bool aIsNormal, bool bIsNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ RealType absDot(
+    const Vector3DTemplate<RealType, aIsNormal> &va, const Vector3DTemplate<RealType, bIsNormal> &vb) {
+    return std::fabs(dot(va, vb));
+}
 
-#define DEFINE_VECTOR3_CROSS(TypeA, TypeB) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr TypeA ## <RealType> cross( \
-        const TypeA ## <RealType> &va, const TypeB ## <RealType> &vb) { \
-        return TypeA ## <RealType>( \
-            va.y * vb.z - va.z * vb.y, \
-            va.z * vb.x - va.x * vb.z, \
-            va.x * vb.y - va.y * vb.x); \
-    }
-DEFINE_VECTOR3_CROSS(Vector3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_CROSS(Vector3DTemplate, Normal3DTemplate);
-DEFINE_VECTOR3_CROSS(Normal3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_CROSS(Normal3DTemplate, Normal3DTemplate);
-#undef DEFINE_VECTOR3_CROSS
+template <typename RealType, bool aIsNormal, bool bIsNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, aIsNormal> cross(
+    const Vector3DTemplate<RealType, aIsNormal> &va, const Vector3DTemplate<RealType, bIsNormal> &vb) {
+    return Vector3DTemplate<RealType, aIsNormal>(
+        va.y * vb.z - va.z * vb.y,
+        va.z * vb.x - va.x * vb.z,
+        va.x * vb.y - va.y * vb.x);
+}
 
-#define DEFINE_VECTOR3_MIN(TypeA, TypeB) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr TypeA ## <RealType> min( \
-        const TypeA ## <RealType> &va, const TypeB ## <RealType> &vb) { \
-        using rtc8::min; \
-        return TypeA ## <RealType>(min(va.x, vb.x), min(va.y, vb.y), min(va.z, vb.z)); \
-    }
-DEFINE_VECTOR3_MIN(Vector3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_MIN(Normal3DTemplate, Normal3DTemplate);
-#undef DEFINE_VECTOR3_MIN
+template <typename RealType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, isNormal> min(
+    const Vector3DTemplate<RealType, isNormal> &va, const Vector3DTemplate<RealType, isNormal> &vb) {
+    using rtc8::min;
+    return Vector3DTemplate<RealType, isNormal>(min(va.x, vb.x), min(va.y, vb.y), min(va.z, vb.z));
+}
 
-#define DEFINE_VECTOR3_MAX(TypeA, TypeB) \
-    template <typename RealType> \
-    CUDA_COMMON_FUNCTION CUDA_INLINE constexpr TypeA ## <RealType> max( \
-        const TypeA ## <RealType> &va, const TypeB ## <RealType> &vb) { \
-        using rtc8::max; \
-        return TypeA ## <RealType>(max(va.x, vb.x), max(va.y, vb.y), max(va.z, vb.z)); \
-    }
-DEFINE_VECTOR3_MAX(Vector3DTemplate, Vector3DTemplate);
-DEFINE_VECTOR3_MAX(Normal3DTemplate, Normal3DTemplate);
-#undef DEFINE_VECTOR3_MAX
+template <typename RealType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, isNormal> max(
+    const Vector3DTemplate<RealType, isNormal> &va, const Vector3DTemplate<RealType, isNormal> &vb) {
+    using rtc8::max;
+    return Vector3DTemplate<RealType, isNormal>(max(va.x, vb.x), max(va.y, vb.y), max(va.z, vb.z));
+}
 
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ Vector3DTemplate<RealType> halfVector(
@@ -1425,16 +1745,16 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Matrix3x3Template<RealType> operator*
 }
 
 template <typename RealType>
-CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType> operator*(
-    const Matrix3x3Template<RealType> &mat, const Vector3DTemplate<RealType> &v) {
-    return Vector3DTemplate<RealType>(dot(mat.row(0), v), dot(mat.row(1), v), dot(mat.row(2), v));
-}
-
-template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> operator*(
     const Matrix3x3Template<RealType> &mat, const Point3DTemplate<RealType> &p) {
     Vector3DTemplate<RealType> v(p);
     return Point3DTemplate<RealType>(dot(mat.row(0), v), dot(mat.row(1), v), dot(mat.row(2), v));
+}
+
+template <typename RealType, bool isNormal>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType> operator*(
+    const Matrix3x3Template<RealType> &mat, const Vector3DTemplate<RealType, isNormal> &v) {
+    return Vector3DTemplate<RealType, isNormal>(dot(mat.row(0), v), dot(mat.row(1), v), dot(mat.row(2), v));
 }
 
 template <typename RealType, typename ScalarType>
@@ -1692,7 +2012,7 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Matrix4x4Template<RealType> transpose
 }
 
 template <typename RealType>
-CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Matrix4x4Template<RealType> invert(
+CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ Matrix4x4Template<RealType> invert(
     const Matrix4x4Template<RealType> &mat) {
     Matrix4x4Template<RealType> ret = mat;
     ret.invert();
@@ -1986,7 +2306,10 @@ CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ void decompose(
         norm = 0;
         for (int i = 0; i < 3; ++i) {
             using std::fabs;
-            RealType n = fabs(curR[0][i] - nextR[0][i]) + abs(curR[1][i] - nextR[1][i]) + abs(curR[2][i] - nextR[2][i]);
+            RealType n =
+                std::fabs(curR[0][i] - nextR[0][i]) +
+                std::fabs(curR[1][i] - nextR[1][i]) +
+                std::fabs(curR[2][i] - nextR[2][i]);
             norm = std::fmax(norm, n);
         }
         curR = nextR;
@@ -2130,4 +2453,184 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr BoundingBox3DTemplate<RealType> opera
     return ret;
 }
 
+
+
+template <typename RealType>
+struct RGBTemplate {
+    RealType r, g, b;
+
+    CUDA_COMMON_FUNCTION RGBTemplate() {}
+    CUDA_COMMON_FUNCTION constexpr RGBTemplate(RealType v) :
+        r(v), g(v), b(v) {}
+    CUDA_COMMON_FUNCTION constexpr RGBTemplate(RealType rr, RealType gg, RealType bb) :
+        r(rr), g(gg), b(bb) {}
+
+    CUDA_COMMON_FUNCTION constexpr RGBTemplate operator+() const {
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION constexpr RGBTemplate operator-() const {
+        return RGBTemplate(-r, -g, -b);
+    }
+
+    CUDA_COMMON_FUNCTION constexpr RGBTemplate &operator+=(const RGBTemplate &v) {
+        r += v.r;
+        g += v.g;
+        b += v.b;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION constexpr RGBTemplate &operator-=(const RGBTemplate &v) {
+        r -= v.r;
+        g -= v.g;
+        b -= v.b;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION constexpr RGBTemplate &operator*=(const RGBTemplate &v) {
+        r *= v.r;
+        g *= v.g;
+        b *= v.b;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION constexpr RGBTemplate &operator*=(RealType s) {
+        r *= s;
+        g *= s;
+        b *= s;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION constexpr RGBTemplate &operator/=(const RGBTemplate &v) {
+        r /= v.r;
+        g /= v.g;
+        b /= v.b;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION constexpr RGBTemplate &operator/=(RealType s) {
+        RealType r = static_cast<RealType>(1.0) / s;
+        return *this *= r;
+    }
+
+    CUDA_COMMON_FUNCTION constexpr RealType &operator[](uint32_t ch) {
+        Assert(ch <= 2, "\"ch\" is out of range [0, 2].");
+        return *(&r + ch);
+    }
+    CUDA_COMMON_FUNCTION constexpr const RealType &operator[](uint32_t ch) const {
+        Assert(ch <= 2, "\"ch\" is out of range [0, 2].");
+        return *(&r + ch);
+    }
+
+    CUDA_COMMON_FUNCTION /*constexpr*/ bool hasNan() const {
+        using rtc8::isnan;
+        return isnan(r) || isnan(g) || isnan(b);
+    }
+    CUDA_COMMON_FUNCTION /*constexpr*/ bool hasInf() const {
+        using rtc8::isinf;
+        return isinf(r) || isinf(g) || isinf(b);
+    }
+    CUDA_COMMON_FUNCTION /*constexpr*/ bool allFinite() const {
+        using rtc8::isfinite;
+        return isfinite(r) && isfinite(g) && isfinite(b);
+    }
+    CUDA_COMMON_FUNCTION constexpr bool hasNonZero() const {
+        return r != 0 || g != 0 || b != 0;
+    }
+    CUDA_COMMON_FUNCTION constexpr bool hasNegative() const {
+        return r < 0 || g < 0 || b < 0;
+    }
+    CUDA_COMMON_FUNCTION /*constexpr*/ bool allNonNegativeFinite() const {
+        return !hasNegative() && allFinite();
+    }
+
+    CUDA_COMMON_FUNCTION constexpr float luminance() const {
+        return
+            static_cast<RealType>(0.2126729) * r +
+            static_cast<RealType>(0.7151522) * g +
+            static_cast<RealType>(0.0721750) * b;
+    }
+
+    CUDA_COMMON_FUNCTION CUDA_INLINE static constexpr RGBTemplate Zero() {
+        return RGBTemplate(0, 0, 0);
+    }
+    CUDA_COMMON_FUNCTION CUDA_INLINE static constexpr RGBTemplate One() {
+        return RGBTemplate(1, 1, 1);
+    }
+    CUDA_COMMON_FUNCTION CUDA_INLINE static constexpr RGBTemplate Infinity() {
+        return RGBTemplate(INFINITY, INFINITY, INFINITY);
+    }
+    CUDA_COMMON_FUNCTION CUDA_INLINE static constexpr RGBTemplate NaN() {
+        return RGBTemplate(NAN, NAN, NAN);
+    }
+};
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr bool operator==(
+    const RGBTemplate<RealType> &va, const RGBTemplate<RealType> &vb) {
+    return va.r == vb.r && va.g == vb.g && va.b == vb.b;
 }
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr bool operator!=(
+    const RGBTemplate<RealType> &va, const RGBTemplate<RealType> &vb) {
+    return va.r != vb.r || va.g != vb.g || va.b != vb.b;
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> operator+(
+    const RGBTemplate<RealType> &va, const RGBTemplate<RealType> &vb) {
+    RGBTemplate<RealType> ret = va;
+    ret += vb;
+    return ret;
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> operator-(
+    const RGBTemplate<RealType> &va, const RGBTemplate<RealType> &vb) {
+    RGBTemplate<RealType> ret = va;
+    ret -= vb;
+    return ret;
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> operator*(
+    const RGBTemplate<RealType> &va, const RGBTemplate<RealType> &vb) {
+    RGBTemplate<RealType> ret = va;
+    ret *= vb;
+    return ret;
+}
+
+template <typename RealType, typename ScalarType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> operator*(
+    const RGBTemplate<RealType> &v, ScalarType s) {
+    RGBTemplate<RealType> ret = v;
+    ret *= s;
+    return ret;
+}
+
+template <typename ScalarType, typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> operator*(
+    ScalarType s, const RGBTemplate<RealType> &v) {
+    RGBTemplate<RealType> ret = v;
+    ret *= s;
+    return ret;
+}
+
+template <typename RealType, typename ScalarType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> operator/(
+    const RGBTemplate<RealType> &v, ScalarType s) {
+    RGBTemplate<RealType> ret = v;
+    ret /= s;
+    return ret;
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> min(
+    const RGBTemplate<RealType> &va, const RGBTemplate<RealType> &vb) {
+    using rtc8::min;
+    return RGBTemplate<RealType>(min(va.r, vb.r), min(va.g, vb.g), min(va.b, vb.b));
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> max(
+    const RGBTemplate<RealType> &va, const RGBTemplate<RealType> &vb) {
+    using rtc8::max;
+    return RGBTemplate<RealType>(max(va.r, vb.r), max(va.g, vb.g), max(va.b, vb.b));
+}
+
+} // namespace rtc8

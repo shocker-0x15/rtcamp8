@@ -236,4 +236,14 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr T pow5(const T &x) {
     return x * pow4(x);
 }
 
+template <typename T, typename RealType>
+CUDA_DEVICE_FUNCTION CUDA_INLINE constexpr T lerp(const T &v0, const T &v1, RealType t) {
+    return (1 - t) * v0 + t * v1;
+}
+
+template <typename RealType>
+CUDA_DEVICE_FUNCTION CUDA_INLINE constexpr RealType safeDivide(RealType a, RealType b) {
+    return b != 0 ? a / b : static_cast<RealType>(0);
+}
+
 }

@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <cstdlib>
 
-#include "../common/basic_types.h"
+#include "../common/common_renderer_types.h"
 
 using Point3D = rtc8::Point3DTemplate<float>;
 using Vector3D = rtc8::Vector3DTemplate<float>;
@@ -13,6 +13,7 @@ using BoundingBox3D = rtc8::BoundingBox3DTemplate<float>;
 using Matrix3x3 = rtc8::Matrix3x3Template<float>;
 using Matrix4x4 = rtc8::Matrix4x4Template<float>;
 using Quaternion = rtc8::QuaternionTemplate<float>;
+using DiscreteDistribution1D = rtc8::shared::DiscreteDistribution1DTemplate<float, false>;
 
 constexpr Point3D func(const Point3D &a, const Point3D &b) {
     Point3D temp = ((5 * -(a + b)) * 2) / 3.0f;
@@ -42,7 +43,11 @@ int32_t main(int32_t argc, const char* argv[]) {
     constexpr Vector3D va(5, 2, 8);
     constexpr Vector3D vb(2, 4, 6);
     constexpr Vector3D vc = min(va, vb);
+    constexpr bool bvc = vc == vb;
+    constexpr bool bvcn = vc != vb;
     constexpr Normal3D nc = vc;
+    constexpr bool bnc = nc == nc;
+    constexpr bool bncn = nc != nc;
 
     constexpr Vector4D v4(vc, 5.0f);
 
