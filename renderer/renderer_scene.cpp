@@ -98,102 +98,108 @@ void loadScene(const std::filesystem::path &sceneFilePath) {
     };
     uint32_t imageWidth;
     uint32_t imageHeight;
+    float timeBegin;
+    float timeEnd;
+    uint32_t fps;
     std::map<std::string, MeshInfo> meshInfos;
     std::map<std::string, InstanceInfo> instInfos;
     std::map<std::string, CameraInfo> camInfos;
     
-    const char* reSpace = R"([ \t]+?)";
+    uint32_t lineIndex = -1;
+
     const char* reInteger = R"(([+-]?\d+))";
     const char* reReal = R"(([+-]?(?:\d+\.?\d*|\.\d+)))";
     const char* reString = R"((\S+?))";
     const char* reQuotedPath = R"*("(.+?)")*";
 
-    uint32_t lineIndex = -1;
+    const auto makeRegex = [](const std::vector<std::string> &tokens) {
+        const char* reSpace = R"([ \t]+?)";
+        std::string pattern = tokens[0];
+        for (uint32_t i = 1; i < tokens.size(); ++i)
+            pattern += reSpace + tokens[i];
+        pattern += "$";
+        return std::move(std::regex(pattern));
+    };
+    const auto testRegex = [&](const std::regex &re, const char* cmd, const std::string &line) {
+        std::smatch m;
+        throwRuntimeErrorAtLine(
+            std::regex_search(line, m, re), lineIndex + 1,
+            "failed to parse \"%s\" command: %s",
+            cmd, line.c_str());
+        return std::move(m);
+    };
+
     using lineFunc = std::function<void(const std::string &line)>;
     std::map<std::string, lineFunc> processors = {
         {
             "image",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("image") +
-                    reSpace + reInteger +
-                    reSpace + reInteger +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"image\" command: %s",
-                    line.c_str());
+                static const char* cmd = "image";
+                static const std::regex re = makeRegex({cmd, reInteger, reInteger});
+                std::smatch m = testRegex(re, cmd, line);
+
                 imageWidth = static_cast<uint32_t>(std::stoi(m[1].str().c_str()));
                 imageHeight = static_cast<uint32_t>(std::stoi(m[2].str().c_str()));
             }
         },
         {
+            "time",
+            [&](const std::string &line) {
+                static const char* cmd = "time";
+                static const std::regex re = makeRegex({cmd, reReal, reReal, reInteger});
+                std::smatch m = testRegex(re, cmd, line);
+
+                timeBegin = std::stof(m[1].str().c_str());
+                timeEnd = std::stof(m[2].str().c_str());
+                fps = static_cast<uint32_t>(std::stoi(m[3].str().c_str()));
+            }
+        },
+        {
             "mesh",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("mesh") +
-                    reSpace + reQuotedPath +
-                    reSpace + reReal +
-                    reSpace + reString +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"mesh\" command: %s",
-                    line.c_str());
-                MeshInfo::File meshInfo;
-                meshInfo.path = m[1].str();
-                meshInfo.scale = std::stof(m[2].str().c_str());
+                static const char* cmd = "mesh";
+                static const std::regex re = makeRegex({cmd, reQuotedPath, reReal, reString});
+                std::smatch m = testRegex(re, cmd, line);
+
                 std::string meshName = m[3].str();
                 throwRuntimeErrorAtLine(
                     !meshInfos.contains(meshName), lineIndex + 1,
                     "Mesh %s has been already created.",
                     meshName.c_str());
+
+                MeshInfo::File meshInfo;
+                meshInfo.path = m[1].str();
+                meshInfo.scale = std::stof(m[2].str().c_str());
                 meshInfos[meshName].body = meshInfo;
             }
         },
         {
             "rect",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("rect") +
-                    reSpace + reReal +
-                    reSpace + reReal +
-                    reSpace + reString +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"rect\" command: %s",
-                    line.c_str());
-                MeshInfo::Rectangle rectInfo;
-                rectInfo.dimX = std::stof(m[1].str().c_str());
-                rectInfo.dimZ = std::stof(m[2].str().c_str());
-                rectInfo.emittance = RGBSpectrum::Zero();
+                static const char* cmd = "rect";
+                static const std::regex re = makeRegex({cmd, reReal, reReal, reString});
+                std::smatch m = testRegex(re, cmd, line);
+
                 std::string meshName = m[3].str();
                 throwRuntimeErrorAtLine(
                     !meshInfos.contains(meshName), lineIndex + 1,
                     "Mesh %s has been already created.",
                     meshName.c_str());
+
+                MeshInfo::Rectangle rectInfo;
+                rectInfo.dimX = std::stof(m[1].str().c_str());
+                rectInfo.dimZ = std::stof(m[2].str().c_str());
+                rectInfo.emittance = RGBSpectrum::Zero();
                 meshInfos[meshName].body = rectInfo;
             }
         },
         {
             "emittance",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("emittance") +
-                    reSpace + reString +
-                    reSpace + reReal +
-                    reSpace + reReal +
-                    reSpace + reReal +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"emittance\" command: %s",
-                    line.c_str());
+                static const char* cmd = "emittance";
+                static const std::regex re = makeRegex({cmd, reString, reReal, reReal, reReal});
+                std::smatch m = testRegex(re, cmd, line);
+
                 std::string meshName = m[1].str();
                 throwRuntimeErrorAtLine(
                     meshInfos.contains(meshName), lineIndex + 1,
@@ -208,23 +214,17 @@ void loadScene(const std::filesystem::path &sceneFilePath) {
                 auto &rectInfo = std::get<MeshInfo::Rectangle>(meshInfo.body);
                 rectInfo.emittance = RGBSpectrum(
                     std::stof(m[2].str().c_str()),
-                    std::stof(m[3].str().c_str()), 
+                    std::stof(m[3].str().c_str()),
                     std::stof(m[4].str().c_str()));
             }
         },
         {
             "inst",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("inst") +
-                    reSpace + reString +
-                    reSpace + reString +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"inst\" command: %s",
-                    line.c_str());
+                static const char* cmd = "inst";
+                static const std::regex re = makeRegex({cmd, reString, reString});
+                std::smatch m = testRegex(re, cmd, line);
+
                 std::string meshName = m[1].str();
                 throwRuntimeErrorAtLine(
                     meshInfos.contains(meshName), lineIndex + 1,
@@ -239,6 +239,7 @@ void loadScene(const std::filesystem::path &sceneFilePath) {
                     !camInfos.contains(instName), lineIndex + 1,
                     "Camera with the same name %s exists.",
                     instName.c_str());
+
                 InstanceInfo instInfo;
                 instInfo.meshName = meshName;
                 instInfo.nextKeyScale = 1.0f;
@@ -250,15 +251,10 @@ void loadScene(const std::filesystem::path &sceneFilePath) {
         {
             "camera",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("camera") +
-                    reSpace + reString +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"camera\" command: %s",
-                    line.c_str());
+                static const char* cmd = "camera";
+                static const std::regex re = makeRegex({cmd, reString});
+                std::smatch m = testRegex(re, cmd, line);
+
                 std::string camName = m[1].str();
                 throwRuntimeErrorAtLine(
                     !camInfos.contains(camName), lineIndex + 1,
@@ -268,6 +264,7 @@ void loadScene(const std::filesystem::path &sceneFilePath) {
                     !instInfos.contains(camName), lineIndex + 1,
                     "Instance with the same name %s exists.",
                     camName.c_str());
+
                 CameraInfo camInfo;
                 camInfo.nextKeyPosition = Point3D(0, 1, 5);
                 camInfo.nextKeyLookAt = Point3D(0, 0, 0);
@@ -279,45 +276,32 @@ void loadScene(const std::filesystem::path &sceneFilePath) {
         {
             "scale",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("scale") +
-                    reSpace + reString +
-                    reSpace + reReal +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"scale\" command: %s",
-                    line.c_str());
+                static const char* cmd = "scale";
+                static const std::regex re = makeRegex({cmd, reString, reReal});
+                std::smatch m = testRegex(re, cmd, line);
+
                 std::string instName = m[1].str();
                 throwRuntimeErrorAtLine(
                     instInfos.contains(instName), lineIndex + 1,
                     "Instance %s does not exist.",
                     instName.c_str());
+
                 instInfos.at(instName).nextKeyScale = std::stof(m[2].str().c_str());
             }
         },
         {
             "rotate",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("rotate") +
-                    reSpace + reString +
-                    reSpace + reReal +
-                    reSpace + reReal +
-                    reSpace + reReal +
-                    reSpace + reReal +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"rotate\" command: %s",
-                    line.c_str());
+                static const char* cmd = "rotate";
+                static const std::regex re = makeRegex({cmd, reString, reReal, reReal, reReal, reReal});
+                std::smatch m = testRegex(re, cmd, line);
+
                 std::string instName = m[1].str();
                 throwRuntimeErrorAtLine(
                     instInfos.contains(instName), lineIndex + 1,
                     "Instance %s does not exist.",
                     instName.c_str());
+
                 instInfos.at(instName).nextKeyOrientation = qRotate(
                     std::stof(m[5].str().c_str()),
                     std::stof(m[2].str().c_str()),
@@ -328,33 +312,26 @@ void loadScene(const std::filesystem::path &sceneFilePath) {
         {
             "trans",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("trans") +
-                    reSpace + reString +
-                    reSpace + reReal +
-                    reSpace + reReal +
-                    reSpace + reReal +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"trans\" command: %s",
-                    line.c_str());
-                std::string instName = m[1].str();
-                bool isInst = instInfos.contains(instName);
-                bool isCam = camInfos.contains(instName);
+                static const char* cmd = "trans";
+                static const std::regex re = makeRegex({cmd, reString, reReal, reReal, reReal});
+                std::smatch m = testRegex(re, cmd, line);
+
+                std::string tgtName = m[1].str();
+                bool isInst = instInfos.contains(tgtName);
+                bool isCam = camInfos.contains(tgtName);
                 throwRuntimeErrorAtLine(
                     isInst || isCam, lineIndex + 1,
                     "Instance/Camera %s does not exist.",
-                    instName.c_str());
+                    tgtName.c_str());
+
                 if (isInst) {
-                    instInfos.at(instName).nextKeyPosition = Point3D(
+                    instInfos.at(tgtName).nextKeyPosition = Point3D(
                         std::stof(m[2].str().c_str()),
                         std::stof(m[3].str().c_str()),
                         std::stof(m[4].str().c_str()));
                 }
                 else {
-                    camInfos.at(instName).nextKeyPosition = Point3D(
+                    camInfos.at(tgtName).nextKeyPosition = Point3D(
                         std::stof(m[2].str().c_str()),
                         std::stof(m[3].str().c_str()),
                         std::stof(m[4].str().c_str()));
@@ -364,44 +341,32 @@ void loadScene(const std::filesystem::path &sceneFilePath) {
         {
             "fovy",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("fovy") +
-                    reSpace + reString +
-                    reSpace + reReal +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"fovy\" command: %s",
-                    line.c_str());
+                static const char* cmd = "fovy";
+                static const std::regex re = makeRegex({cmd, reString, reReal});
+                std::smatch m = testRegex(re, cmd, line);
+
                 std::string camName = m[1].str();
                 throwRuntimeErrorAtLine(
                     camInfos.contains(camName), lineIndex + 1,
                     "Camera %s does not exist.",
                     camName.c_str());
+
                 camInfos.at(camName).nextKeyFovY = std::stof(m[2].str().c_str());
             }
         },
         {
             "lookat",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("lookat") +
-                    reSpace + reString +
-                    reSpace + reReal +
-                    reSpace + reReal +
-                    reSpace + reReal +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"lookat\" command: %s",
-                    line.c_str());
+                static const char* cmd = "lookat";
+                static const std::regex re = makeRegex({cmd, reString, reReal, reReal, reReal});
+                std::smatch m = testRegex(re, cmd, line);
+
                 std::string camName = m[1].str();
                 throwRuntimeErrorAtLine(
                     camInfos.contains(camName), lineIndex + 1,
                     "Camera %s does not exist.",
                     camName.c_str());
+
                 camInfos.at(camName).nextKeyLookAt = Point3D(
                     std::stof(m[2].str().c_str()),
                     std::stof(m[3].str().c_str()),
@@ -411,27 +376,20 @@ void loadScene(const std::filesystem::path &sceneFilePath) {
         {
             "addkey",
             [&](const std::string &line) {
-                static const std::regex re(
-                    std::string("addkey") +
-                    reSpace + reString +
-                    reSpace + reReal +
-                    reSpace + reString +
-                    reSpace + reString +
-                    "$");
-                std::smatch m;
-                throwRuntimeErrorAtLine(
-                    std::regex_search(line, m, re), lineIndex + 1,
-                    "failed to parse \"addkey\" command: %s",
-                    line.c_str());
-                std::string instName = m[1].str();
-                bool isInst = instInfos.contains(instName);
-                bool isCam = camInfos.contains(instName);
+                static const char* cmd = "addkey";
+                static const std::regex re = makeRegex({cmd, reString, reReal, reString, reString});
+                std::smatch m = testRegex(re, cmd, line);
+
+                std::string tgtName = m[1].str();
+                bool isInst = instInfos.contains(tgtName);
+                bool isCam = camInfos.contains(tgtName);
                 throwRuntimeErrorAtLine(
                     isInst || isCam, lineIndex + 1,
                     "Instance/Camera %s does not exist.",
-                    instName.c_str());
+                    tgtName.c_str());
+
                 if (isInst) {
-                    InstanceInfo &instInfo = instInfos.at(instName);
+                    InstanceInfo &instInfo = instInfos.at(tgtName);
                     KeyInstanceState state;
                     state.timePoint = std::stof(m[2].str().c_str());
                     state.scale = instInfo.nextKeyScale;
@@ -440,7 +398,7 @@ void loadScene(const std::filesystem::path &sceneFilePath) {
                     instInfo.keyStates.push_back(state);
                 }
                 else {
-                    CameraInfo &camInfo = camInfos.at(instName);
+                    CameraInfo &camInfo = camInfos.at(tgtName);
                     KeyCameraState state;
                     state.timePoint = std::stof(m[2].str().c_str());
                     state.position = camInfo.nextKeyPosition;

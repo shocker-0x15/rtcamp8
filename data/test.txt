@@ -1,4 +1,5 @@
 image 1920 1080
+time 0 10 60
 
 mesh "C:/Users/shocker_0x15/repos/assets/CornellBox_RB/Cornell_box_RB.obj" 1.0 cornell_box
 
