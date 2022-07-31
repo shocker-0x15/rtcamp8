@@ -1,3 +1,5 @@
+#pragma once
+
 #include "../common/common_renderer_types.h"
 
 namespace rtc8::shared {
@@ -52,9 +54,9 @@ struct LightSample {
 
 
 struct StaticPipelineLaunchParameters {
-    GeometryInstance* geometryInstances;
     BSDFProcedureSet* bsdfProcedureSets;
     SurfaceMaterial* surfaceMaterials;
+    GeometryInstance* geometryInstances;
 
     int2 imageSize;
     optixu::NativeBlockBuffer2D<PCG32RNG> rngBuffer;
@@ -99,7 +101,7 @@ RT_PIPELINE_LAUNCH_PARAMETERS rtc8::shared::PipelineLaunchParameters plp;
 
 namespace rtc8::device {
 
-CUDA_DEVICE_FUNCTION CUDA_INLINE const BSDFProcedureSet &getBSDFProcedureSet(uint32_t slot) {
+CUDA_DEVICE_FUNCTION CUDA_INLINE const shared::BSDFProcedureSet &getBSDFProcedureSet(uint32_t slot) {
     return plp.s->bsdfProcedureSets[slot];
 }
 

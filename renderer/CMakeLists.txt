@@ -11,7 +11,6 @@ set(
 
 set(
     OPTIX_KERNELS
-    "gpu_kernels/optix_gbuffer_kernels.cu"
     "gpu_kernels/optix_pathtracing_kernels.cu"
 )
 

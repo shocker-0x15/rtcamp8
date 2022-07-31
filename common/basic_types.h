@@ -1,4 +1,6 @@
-﻿#include "common_shared.h"
+﻿#pragma once
+
+#include "common_shared.h"
 
 #if !defined(__CUDA_ARCH__) && !defined(__CUDACC__)
 // ----------------------------------------------------------------
@@ -2127,7 +2129,7 @@ CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ Matrix4x4Template<RealType> lookA
 // Quaternion operators and functions
 
 template <typename RealType>
-CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType>::QuaternionTemplate<RealType>(
+CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType>::QuaternionTemplate(
     const Matrix4x4Template<RealType> &mat) {
     RealType trace = mat[0][0] + mat[1][1] + mat[2][2];
     if (trace > 0) {
@@ -2631,6 +2633,66 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> max(
     const RGBTemplate<RealType> &va, const RGBTemplate<RealType> &vb) {
     using rtc8::max;
     return RGBTemplate<RealType>(max(va.r, vb.r), max(va.g, vb.g), max(va.b, vb.b));
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE RGBTemplate<RealType> HSVtoRGB(RealType h, RealType s, RealType v) {
+    if (s == 0)
+        return RGBTemplate<RealType>(v, v, v);
+
+    h = h - std::floor(h);
+    int32_t hi = static_cast<int32_t>(h * 6);
+    RealType f = h * 6 - hi;
+    RealType m = v * (1 - s);
+    RealType n = v * (1 - s * f);
+    RealType k = v * (1 - s * (1 - f));
+    if (hi == 0)
+        return RGBTemplate<RealType>(v, k, m);
+    else if (hi == 1)
+        return RGBTemplate<RealType>(n, v, m);
+    else if (hi == 2)
+        return RGBTemplate<RealType>(m, v, k);
+    else if (hi == 3)
+        return RGBTemplate<RealType>(m, n, v);
+    else if (hi == 4)
+        return RGBTemplate<RealType>(k, m, v);
+    else if (hi == 5)
+        return RGBTemplate<RealType>(v, m, n);
+    return RGBTemplate<RealType>(0, 0, 0);
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE RealType simpleToneMap_s(RealType value) {
+    Assert(value >= 0, "Input value must be equal to or greater than 0: %g", value);
+    return static_cast<RealType>(1) - std::exp(-value);
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE RealType sRGB_degamma_s(RealType value) {
+    Assert(value >= 0, "Input value must be equal to or greater than 0: %g", value);
+    if (value <= static_cast<RealType>(0.04045))
+        return value / static_cast<RealType>(12.92);
+    return std::pow((value + static_cast<RealType>(0.055)) / static_cast<RealType>(1.055),
+                    static_cast<RealType>(2.4));
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE RealType sRGB_gamma_s(RealType value) {
+    Assert(value >= 0, "Input value must be equal to or greater than 0: %g", value);
+    if (value <= static_cast<RealType>(0.0031308))
+        return static_cast<RealType>(12.92) * value;
+    return static_cast<RealType>(1.055) *
+        std::pow(value, static_cast<RealType>(1 / 2.4)) -
+        static_cast<RealType>(0.055);
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE RGBTemplate<RealType> sRGB_degamma(
+    const RGBTemplate<RealType> &value) {
+    return RGBTemplate<RealType>(
+        sRGB_degamma_s(value.r),
+        sRGB_degamma_s(value.g),
+        sRGB_degamma_s(value.b));
 }
 
 } // namespace rtc8

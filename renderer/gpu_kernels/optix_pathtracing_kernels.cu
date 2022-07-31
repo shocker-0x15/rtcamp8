@@ -1,4 +1,5 @@
 ﻿#include "../renderer_shared.h"
+#include "../../ext/nanovdb/NanoVDB.h"
 
 using namespace rtc8;
 using namespace rtc8::shared;
@@ -404,14 +405,13 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
 
         const SurfaceMaterial &surfMat = plp.s->surfaceMaterials[geomInst.surfMatSlot];
 
-        if (surfMat.normal) {
-            Normal3D modLocalNormal = surfMat.readModifiedNormal(
-                surfMat.normal, surfMat.normalDimInfo, surfPt.texCoord);
+        if (geomInst.normal) {
+            Normal3D modLocalNormal = geomInst.readModifiedNormal(
+                geomInst.normal, geomInst.normalDimInfo, surfPt.texCoord);
             applyBumpMapping(modLocalNormal, &surfPt.shadingFrame);
         }
 
-        Point3D rayOrigin(optixGetWorldRayOrigin());
-        Vector3D vOut(-optixGetWorldRayDirection());
+        Vector3D vOut(-rayDirection);
         Vector3D vOutLocal = surfPt.toLocal(vOut);
 
         // Implicit light sampling

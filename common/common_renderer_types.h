@@ -1,10 +1,12 @@
-﻿#include "basic_types.h"
+﻿#pragma once
+
+#include "basic_types.h"
 
 // JP: Callable Programや関数ポインターによる動的な関数呼び出しを
 //     無くした場合の性能を見たい場合にこのマクロを有効化する。
 // EN: Enable this switch when you want to see performance
 //     without dynamic function calls by callable programs or function pointers.
-#define USE_HARD_CODED_BSDF_FUNCTIONS 0
+static constexpr bool useGenericBSDF = false;
 //#define HARD_CODED_BSDF DichromaticBRDF
 #define HARD_CODED_BSDF SimplePBR_BRDF
 //#define HARD_CODED_BSDF LambertBRDF
@@ -86,6 +88,16 @@ namespace rtc8 {
 
 
 namespace rtc8::shared {
+
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr uint32_t mapPrimarySampleToDiscrete(
+    float u01, uint32_t numValues, float* uRemapped = nullptr) {
+    uint32_t idx = min(static_cast<uint32_t>(u01 * numValues), numValues - 1);
+    if (uRemapped)
+        *uRemapped = u01 * numValues - idx;
+    return idx;
+}
+
+
 
 class PCG32RNG {
     uint64_t state;
@@ -702,14 +714,8 @@ struct SimplePBRSurfaceMaterial {
 
 
 struct SurfaceMaterial {
-    uint32_t body[10];
-
-    CUtexObject normal;
+    uint32_t body[12];
     CUtexObject emittance;
-    TexDimInfo normalDimInfo;
-
-    ReadModifiedNormal readModifiedNormal;
-
     uint32_t bsdfProcSetSlot;
     SetupBSDFBody setupBSDFBody; // shortcut
 };
@@ -764,6 +770,9 @@ struct Triangle {
 struct GeometryInstance {
     const Vertex* vertices;
     const Triangle* triangles;
+    CUtexObject normal;
+    TexDimInfo normalDimInfo;
+    ReadModifiedNormal readModifiedNormal;
     LightDistribution emitterPrimDist;
     uint32_t surfMatSlot;
 };
@@ -836,19 +845,9 @@ struct Instance {
 
 namespace rtc8::device {
 
-using namespace rtc8::shared;
-
 static constexpr float RayEpsilon = 1e-4;
 
 
-
-CUDA_DEVICE_FUNCTION CUDA_INLINE constexpr uint32_t mapPrimarySampleToDiscrete(
-    float u01, uint32_t numValues, float* uRemapped = nullptr) {
-    uint32_t idx = min(static_cast<uint32_t>(u01 * numValues), numValues - 1);
-    if (uRemapped)
-        *uRemapped = u01 * numValues - idx;
-    return idx;
-}
 
 CUDA_DEVICE_FUNCTION CUDA_INLINE void concentricSampleDisk(float u0, float u1, float* dx, float* dy) {
     float r, theta;
@@ -935,7 +934,7 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE /*constexpr*/ Point3D offsetRayOrigin(
 
 
 CUDA_DEVICE_FUNCTION CUDA_INLINE constexpr TexCoord2D adjustTexCoord(
-    TexDimInfo dimInfo, const TexCoord2D &texCoord) {
+    shared::TexDimInfo dimInfo, const TexCoord2D &texCoord) {
     TexCoord2D mTexCoord = texCoord;
     if (dimInfo.isNonPowerOfTwo && dimInfo.isBCTexture) {
         uint32_t bcWidth = (dimInfo.dimX + 3) / 4 * 4;
@@ -948,7 +947,7 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE constexpr TexCoord2D adjustTexCoord(
 
 template <typename T>
 CUDA_DEVICE_FUNCTION CUDA_INLINE T sample(
-    CUtexObject texture, TexDimInfo dimInfo, const TexCoord2D &texCoord) {
+    CUtexObject texture, shared::TexDimInfo dimInfo, const TexCoord2D &texCoord) {
     TexCoord2D mTexCoord = adjustTexCoord(dimInfo, texCoord);
     return tex2DLod<T>(texture, mTexCoord.u, mTexCoord.v, 0.0f);
 }
@@ -1008,7 +1007,7 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void applyBumpMapping(
 }
 
 RT_CALLABLE_PROGRAM Normal3D RT_DC_NAME(readModifiedNormalFromNormalMap)
-(CUtexObject texture, TexDimInfo dimInfo, TexCoord2D texCoord) {
+(CUtexObject texture, shared::TexDimInfo dimInfo, TexCoord2D texCoord) {
     float4 texValue = sample<float4>(texture, dimInfo, texCoord);
     Normal3D modLocalNormal(texValue.x, texValue.y, texValue.z);
     modLocalNormal = 2.0f * modLocalNormal - Normal3D(1.0f);
@@ -1019,7 +1018,7 @@ RT_CALLABLE_PROGRAM Normal3D RT_DC_NAME(readModifiedNormalFromNormalMap)
 CUDA_DECLARE_CALLABLE_PROGRAM_POINTER(readModifiedNormalFromNormalMap);
 
 RT_CALLABLE_PROGRAM Normal3D RT_DC_NAME(readModifiedNormalFromNormalMap2ch)
-(CUtexObject texture, TexDimInfo dimInfo, TexCoord2D texCoord) {
+(CUtexObject texture, shared::TexDimInfo dimInfo, TexCoord2D texCoord) {
     float2 texValue = sample<float2>(texture, dimInfo, texCoord);
     float x = 2.0f * texValue.x - 1.0f;
     float y = 2.0f * texValue.y - 1.0f;
@@ -1032,7 +1031,7 @@ RT_CALLABLE_PROGRAM Normal3D RT_DC_NAME(readModifiedNormalFromNormalMap2ch)
 CUDA_DECLARE_CALLABLE_PROGRAM_POINTER(readModifiedNormalFromNormalMap2ch);
 
 RT_CALLABLE_PROGRAM Normal3D RT_DC_NAME(readModifiedNormalFromHeightMap)
-(CUtexObject texture, TexDimInfo dimInfo, TexCoord2D texCoord) {
+(CUtexObject texture, shared::TexDimInfo dimInfo, TexCoord2D texCoord) {
     if (dimInfo.isNonPowerOfTwo && dimInfo.isBCTexture) {
         uint32_t bcWidth = (dimInfo.dimX + 3) / 4 * 4;
         uint32_t bcHeight = (dimInfo.dimY + 3) / 4 * 4;
@@ -1054,8 +1053,8 @@ CUDA_DECLARE_CALLABLE_PROGRAM_POINTER(readModifiedNormalFromHeightMap);
 
 template <typename BSDFType>
 CUDA_DEVICE_FUNCTION CUDA_INLINE void setupBSDFBody(
-    const SurfaceMaterial &matData,
-    TexCoord2D texCoord, uint32_t* bodyData, BSDFBuildFlags flags);
+    const shared::SurfaceMaterial &matData,
+    TexCoord2D texCoord, uint32_t* bodyData, shared::BSDFBuildFlags flags);
 
 
 
@@ -1063,6 +1062,7 @@ class LambertBRDF {
     RGBSpectrum m_reflectance;
 
 public:
+    CUDA_DEVICE_FUNCTION LambertBRDF() {}
     CUDA_DEVICE_FUNCTION LambertBRDF(const RGBSpectrum &reflectance) :
         m_reflectance(reflectance) {}
 
@@ -1073,36 +1073,37 @@ public:
         *roughness = 1.0f;
     }
     CUDA_DEVICE_FUNCTION RGBSpectrum sampleF(
-        const BSDFQuery &query, const BSDFSample &sample, BSDFQueryResult* result) const {
+        const shared::BSDFQuery &query, const shared::BSDFSample &sample,
+        shared::BSDFQueryResult* result) const {
         result->dirLocal = cosineSampleHemisphere(sample.uDir[0], sample.uDir[1]);
         result->dirPDensity = result->dirLocal.z / pi_v<float>;
         if (query.dirLocal.z <= 0.0f)
             result->dirLocal.z *= -1;
         return m_reflectance / pi_v<float>;
     }
-    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(const BSDFQuery &query, const Vector3D &vSampled) const {
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(const shared::BSDFQuery &query, const Vector3D &vSampled) const {
         if (query.dirLocal.z * vSampled.z > 0)
             return m_reflectance / pi_v<float>;
         else
             return RGBSpectrum::Zero();
     }
-    CUDA_DEVICE_FUNCTION float evaluatePDF(const BSDFQuery &query, const Vector3D &vSampled) const {
+    CUDA_DEVICE_FUNCTION float evaluatePDF(const shared::BSDFQuery &query, const Vector3D &vSampled) const {
         if (query.dirLocal.z * vSampled.z > 0)
             return std::fabs(vSampled.z) / pi_v<float>;
         else
             return 0.0f;
     }
 
-    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateDHReflectanceEstimate(const BSDFQuery &query) const {
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateDHReflectanceEstimate(const shared::BSDFQuery &query) const {
         return m_reflectance;
     }
 };
 
 template<>
 CUDA_DEVICE_FUNCTION CUDA_INLINE void setupBSDFBody<LambertBRDF>(
-    const SurfaceMaterial &matData,
-    TexCoord2D texCoord, uint32_t* bodyData, BSDFBuildFlags /*flags*/) {
-    auto &mat = reinterpret_cast<const LambertianSurfaceMaterial &>(matData.body);
+    const shared::SurfaceMaterial &matData,
+    TexCoord2D texCoord, uint32_t* bodyData, shared::BSDFBuildFlags /*flags*/) {
+    auto &mat = reinterpret_cast<const shared::LambertianSurfaceMaterial &>(matData.body);
     float4 reflectance = sample<float4>(
         mat.reflectance, mat.reflectanceDimInfo, texCoord);
     auto &bsdfBody = *reinterpret_cast<LambertBRDF*>(bodyData);
@@ -1252,7 +1253,8 @@ public:
         *roughness = m_roughness;
     }
     CUDA_DEVICE_FUNCTION RGBSpectrum sampleF(
-        const BSDFQuery &query, const BSDFSample &sample, BSDFQueryResult* result) const {
+        const shared::BSDFQuery &query, const shared::BSDFSample &sample,
+        shared::BSDFQueryResult* result) const {
         GGXMicrofacetDistribution ggx;
         ggx.alpha_g = m_roughness * m_roughness;
 
@@ -1369,7 +1371,7 @@ public:
 
         return ret;
     }
-    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(const BSDFQuery &query, const Vector3D &vSampled) const {
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(const shared::BSDFQuery &query, const Vector3D &vSampled) const {
         GGXMicrofacetDistribution ggx;
         ggx.alpha_g = m_roughness * m_roughness;
 
@@ -1412,7 +1414,7 @@ public:
 
         return ret;
     }
-    CUDA_DEVICE_FUNCTION float evaluatePDF(const BSDFQuery &query, const Vector3D &vSampled) const {
+    CUDA_DEVICE_FUNCTION float evaluatePDF(const shared::BSDFQuery &query, const Vector3D &vSampled) const {
         GGXMicrofacetDistribution ggx;
         ggx.alpha_g = m_roughness * m_roughness;
 
@@ -1461,7 +1463,7 @@ public:
         return ret;
     }
 
-    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateDHReflectanceEstimate(const BSDFQuery &query) const {
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateDHReflectanceEstimate(const shared::BSDFQuery &query) const {
         bool entering = query.dirLocal.z >= 0.0f;
         Vector3D dirV = entering ? query.dirLocal : -query.dirLocal;
 
@@ -1499,6 +1501,7 @@ public:
 
 class SimplePBR_BRDF : public DichromaticBRDF {
 public:
+    CUDA_DEVICE_FUNCTION SimplePBR_BRDF() {}
     CUDA_DEVICE_FUNCTION SimplePBR_BRDF(
         const RGBSpectrum &baseColor, float reflectance, float smoothness, float metallic) {
         m_diffuseColor = baseColor * (1 - metallic);
@@ -1509,9 +1512,9 @@ public:
 
 template<>
 CUDA_DEVICE_FUNCTION CUDA_INLINE void setupBSDFBody<DichromaticBRDF>(
-    const SurfaceMaterial &matData,
-    TexCoord2D texCoord, uint32_t* bodyData, BSDFBuildFlags flags) {
-    auto &mat = reinterpret_cast<const DichromaticSurfaceMaterial &>(matData.body);
+    const shared::SurfaceMaterial &matData,
+    TexCoord2D texCoord, uint32_t* bodyData, shared::BSDFBuildFlags flags) {
+    auto &mat = reinterpret_cast<const shared::DichromaticSurfaceMaterial &>(matData.body);
     float4 diffuseColor = sample<float4>(
         mat.diffuse,
         mat.diffuseDimInfo,
@@ -1536,9 +1539,9 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void setupBSDFBody<DichromaticBRDF>(
 
 template<>
 CUDA_DEVICE_FUNCTION CUDA_INLINE void setupBSDFBody<SimplePBR_BRDF>(
-    const SurfaceMaterial &matData,
-    TexCoord2D texCoord, uint32_t* bodyData, BSDFBuildFlags flags) {
-    auto &mat = reinterpret_cast<const SimplePBRSurfaceMaterial &>(matData.body);
+    const shared::SurfaceMaterial &matData,
+    TexCoord2D texCoord, uint32_t* bodyData, shared::BSDFBuildFlags flags) {
+    auto &mat = reinterpret_cast<const shared::SimplePBRSurfaceMaterial &>(matData.body);
     float4 baseColor_opacity = sample<float4>(
         mat.baseColor_opacity,
         mat.baseColor_opacity_dimInfo,
@@ -1568,26 +1571,26 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void setupBSDFBody<SimplePBR_BRDF>(
     }\
     CUDA_DECLARE_CALLABLE_PROGRAM_POINTER(BSDFType ## _getSurfaceParameters);\
     RT_CALLABLE_PROGRAM RGBSpectrum RT_DC_NAME(BSDFType ## _sampleF)(\
-        const uint32_t* data, const BSDFQuery &query, const BSDFSample &sample,\
-        BSDFQueryResult* result) {\
+        const uint32_t* data, const shared::BSDFQuery &query, const shared::BSDFSample &sample,\
+        shared::BSDFQueryResult* result) {\
         auto &bsdf = *reinterpret_cast<const BSDFType*>(data);\
         return bsdf.sampleF(query, sample, result);\
     }\
     CUDA_DECLARE_CALLABLE_PROGRAM_POINTER(BSDFType ## _sampleF);\
     RT_CALLABLE_PROGRAM RGBSpectrum RT_DC_NAME(BSDFType ## _evaluateF)(\
-        const uint32_t* data, const BSDFQuery &query, const Vector3D &vSampled) {\
+        const uint32_t* data, const shared::BSDFQuery &query, const Vector3D &vSampled) {\
         auto &bsdf = *reinterpret_cast<const BSDFType*>(data);\
         return bsdf.evaluateF(query, vSampled);\
     }\
     CUDA_DECLARE_CALLABLE_PROGRAM_POINTER(BSDFType ## _evaluateF);\
     RT_CALLABLE_PROGRAM float RT_DC_NAME(BSDFType ## _evaluatePDF)(\
-        const uint32_t* data, const BSDFQuery &query, const Vector3D &vSampled) {\
+        const uint32_t* data, const shared::BSDFQuery &query, const Vector3D &vSampled) {\
         auto &bsdf = *reinterpret_cast<const BSDFType*>(data);\
         return bsdf.evaluatePDF(query, vSampled);\
     }\
     CUDA_DECLARE_CALLABLE_PROGRAM_POINTER(BSDFType ## _evaluatePDF);\
     RT_CALLABLE_PROGRAM RGBSpectrum RT_DC_NAME(BSDFType ## _evaluateDHReflectanceEstimate)(\
-        const uint32_t* data, const BSDFQuery &query) {\
+        const uint32_t* data, const shared::BSDFQuery &query) {\
         auto &bsdf = *reinterpret_cast<const BSDFType*>(data);\
         return bsdf.evaluateDHReflectanceEstimate(query);\
     }\
@@ -1600,8 +1603,8 @@ DEFINE_BSDF_CALLABLES(DichromaticBRDF);
 
 #define DEFINE_SETUP_BSDF_CALLABLE(BSDFType) \
     RT_CALLABLE_PROGRAM void RT_DC_NAME(setup ## BSDFType)(\
-        const SurfaceMaterial &matData,\
-        TexCoord2D texCoord, uint32_t* bodyData, BSDFBuildFlags flags) {\
+        const shared::SurfaceMaterial &matData,\
+        TexCoord2D texCoord, uint32_t* bodyData, shared::BSDFBuildFlags flags) {\
         setupBSDFBody<BSDFType>(matData, texCoord, bodyData, flags);\
     }\
     CUDA_DECLARE_CALLABLE_PROGRAM_POINTER(setup ## BSDFType)
@@ -1614,54 +1617,110 @@ DEFINE_SETUP_BSDF_CALLABLE(SimplePBR_BRDF);
 
 
 
-CUDA_DEVICE_FUNCTION const BSDFProcedureSet &getBSDFProcedureSet(uint32_t slot);
+CUDA_DEVICE_FUNCTION const shared::BSDFProcedureSet &getBSDFProcedureSet(uint32_t slot);
 
-class BSDF {
-#if USE_HARD_CODED_BSDF_FUNCTIONS
-    uint32_t m_data[(sizeof(HARD_CODED_BSDF) + 3) / 4];
-#else
-    static constexpr uint32_t NumDwords = 16;
-    BSDFGetSurfaceParameters m_getSurfaceParameters;
-    BSDFSampleF m_sampleF;
-    BSDFEvaluateF m_evaluateF;
-    BSDFEvaluatePDF m_evaluatePDF;
-    BSDFEvaluateDHReflectanceEstimate m_evaluateDHReflectanceEstimate;
-    uint32_t m_data[NumDwords];
-#endif
+template <bool isGeneric>
+class BSDFTemplate;
+
+template <>
+class BSDFTemplate<false> {
+    HARD_CODED_BSDF m_bsdf;
 
 public:
     CUDA_DEVICE_FUNCTION void setup(
-        const SurfaceMaterial &matData, const TexCoord2D &texCoord,
-        BSDFBuildFlags flags = BSDFBuildFlags::None) {
-#if USE_HARD_CODED_BSDF_FUNCTIONS
-        setupBSDFBody<HARD_CODED_BSDF>(matData, texCoord, m_data, flags);
-#else
-        const BSDFProcedureSet &procSet = getBSDFProcedureSet(matData.bsdfProcSetSlot);
+        const shared::SurfaceMaterial &matData, const TexCoord2D &texCoord,
+        shared::BSDFBuildFlags flags = shared::BSDFBuildFlags::None) {
+        setupBSDFBody<HARD_CODED_BSDF>(matData, texCoord, reinterpret_cast<uint32_t*>(&m_bsdf), flags);
+    }
+    CUDA_DEVICE_FUNCTION void getSurfaceParameters(
+        RGBSpectrum* diffuseReflectance, RGBSpectrum* specularReflectance, float* roughness) const {
+        return m_bsdf.getSurfaceParameters(diffuseReflectance, specularReflectance, roughness);
+    }
+    CUDA_DEVICE_FUNCTION RGBSpectrum sampleF(
+        const shared::BSDFQuery &query, const shared::BSDFSample &smp,
+        shared::BSDFQueryResult* result) const {
+        RGBSpectrum fsValue = m_bsdf.sampleF(query, smp, result);
+        return fsValue;
+    }
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(
+        const shared::BSDFQuery &query, const Vector3D &vSampled) const {
+        RGBSpectrum fsValue = m_bsdf.evaluateF(query, vSampled);
+        return fsValue;
+    }
+    CUDA_DEVICE_FUNCTION float evaluatePDF(
+        const shared::BSDFQuery &query, const Vector3D &vSampled) const {
+        return m_bsdf.evaluatePDF(query, vSampled);
+    }
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateDHReflectanceEstimate(const shared::BSDFQuery &query) const {
+        return m_bsdf.evaluateDHReflectanceEstimate(query);
+    }
+};
+
+template <>
+class BSDFTemplate<true> {
+    static constexpr uint32_t NumDwords = 16;
+    shared::BSDFGetSurfaceParameters m_getSurfaceParameters;
+    shared::BSDFSampleF m_sampleF;
+    shared::BSDFEvaluateF m_evaluateF;
+    shared::BSDFEvaluatePDF m_evaluatePDF;
+    shared::BSDFEvaluateDHReflectanceEstimate m_evaluateDHReflectanceEstimate;
+    uint32_t m_data[NumDwords];
+
+public:
+    CUDA_DEVICE_FUNCTION void setup(
+        const shared::SurfaceMaterial &matData, const TexCoord2D &texCoord,
+        shared::BSDFBuildFlags flags = shared::BSDFBuildFlags::None) {
+        matData.setupBSDFBody(matData, texCoord, m_data, flags);
+        const shared::BSDFProcedureSet &procSet = getBSDFProcedureSet(matData.bsdfProcSetSlot);
         m_getSurfaceParameters = procSet.getSurfaceParameters;
         m_sampleF = procSet.sampleF;
         m_evaluateF = procSet.evaluateF;
         m_evaluatePDF = procSet.evaluatePDF;
         m_evaluateDHReflectanceEstimate = procSet.evaluateDHReflectanceEstimate;
-        matData.setupBSDFBody(matData, texCoord, m_data, flags);
-#endif
     }
     CUDA_DEVICE_FUNCTION void getSurfaceParameters(
         RGBSpectrum* diffuseReflectance, RGBSpectrum* specularReflectance, float* roughness) const {
-#if USE_HARD_CODED_BSDF_FUNCTIONS
-        auto &bsdf = *reinterpret_cast<const HARD_CODED_BSDF*>(m_data);
-        return bsdf.getSurfaceParameters(diffuseReflectance, specularReflectance, roughness);
-#else
         return m_getSurfaceParameters(m_data, diffuseReflectance, specularReflectance, roughness);
-#endif
     }
     CUDA_DEVICE_FUNCTION RGBSpectrum sampleF(
-        const BSDFQuery &query, const BSDFSample &smp, BSDFQueryResult* result) const {
-#if USE_HARD_CODED_BSDF_FUNCTIONS
-        auto &bsdf = *reinterpret_cast<const HARD_CODED_BSDF*>(m_data);
-        RGBSpectrum fsValue = bsdf.sampleF(query, smp, result);
-#else
+        const shared::BSDFQuery &query, const shared::BSDFSample &smp,
+        shared::BSDFQueryResult* result) const {
         RGBSpectrum fsValue = m_sampleF(m_data, query, smp, result);
-#endif
+        return fsValue;
+    }
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(
+        const shared::BSDFQuery &query, const Vector3D &vSampled) const {
+        RGBSpectrum fsValue = m_evaluateF(m_data, query, vSampled);
+        return fsValue;
+    }
+    CUDA_DEVICE_FUNCTION float evaluatePDF(
+        const shared::BSDFQuery &query, const Vector3D &vSampled) const {
+        return m_evaluatePDF(m_data, query, vSampled);
+    }
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateDHReflectanceEstimate(const shared::BSDFQuery &query) const {
+        return m_evaluateDHReflectanceEstimate(m_data, query);
+    }
+};
+
+
+
+class BSDF {
+    BSDFTemplate<useGenericBSDF> m_body;
+
+public:
+    CUDA_DEVICE_FUNCTION void setup(
+        const shared::SurfaceMaterial &matData, const TexCoord2D &texCoord,
+        shared::BSDFBuildFlags flags = shared::BSDFBuildFlags::None) {
+        m_body.setup(matData, texCoord, flags);
+    }
+    CUDA_DEVICE_FUNCTION void getSurfaceParameters(
+        RGBSpectrum* diffuseReflectance, RGBSpectrum* specularReflectance, float* roughness) const {
+        return m_body.getSurfaceParameters(diffuseReflectance, specularReflectance, roughness);
+    }
+    CUDA_DEVICE_FUNCTION RGBSpectrum sampleF(
+        const shared::BSDFQuery &query, const shared::BSDFSample &smp,
+        shared::BSDFQueryResult* result) const {
+        RGBSpectrum fsValue = m_body.sampleF(query, smp, result);
 
         float snCorrection = std::fabs(result->dirLocal.z / dot(result->dirLocal, query.geometricNormalLocal));
         if (!isfinite(snCorrection))
@@ -1680,17 +1739,13 @@ public:
             snCorrection);
         return fsValue;
     }
-    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(const BSDFQuery &query, const Vector3D &vSampled) const {
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(
+        const shared::BSDFQuery &query, const Vector3D &vSampled) const {
         float snCorrection = std::fabs(vSampled.z / dot(vSampled, query.geometricNormalLocal));
         if (!isfinite(snCorrection))
             return RGBSpectrum::Zero();
 
-#if USE_HARD_CODED_BSDF_FUNCTIONS
-        auto &bsdf = *reinterpret_cast<const HARD_CODED_BSDF*>(m_data);
-        RGBSpectrum fsValue = bsdf.evaluateF(query, vSampled);
-#else
-        RGBSpectrum fsValue = m_evaluateF(m_data, query, vSampled);
-#endif
+        RGBSpectrum fsValue = m_body.evaluateF(query, vSampled);
 
         fsValue *= snCorrection;
         Assert(
@@ -1703,21 +1758,12 @@ public:
             snCorrection);
         return fsValue;
     }
-    CUDA_DEVICE_FUNCTION float evaluatePDF(const BSDFQuery &query, const Vector3D &vSampled) const {
-#if USE_HARD_CODED_BSDF_FUNCTIONS
-        auto &bsdf = *reinterpret_cast<const HARD_CODED_BSDF*>(m_data);
-        return bsdf.evaluatePDF(query, vSampled);
-#else
-        return m_evaluatePDF(m_data, query, vSampled);
-#endif
+    CUDA_DEVICE_FUNCTION float evaluatePDF(
+        const shared::BSDFQuery &query, const Vector3D &vSampled) const {
+        return m_body.evaluatePDF(query, vSampled);
     }
-    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateDHReflectanceEstimate(const BSDFQuery &query) const {
-#if USE_HARD_CODED_BSDF_FUNCTIONS
-        auto &bsdf = *reinterpret_cast<const HARD_CODED_BSDF*>(m_data);
-        return bsdf.evaluateDHReflectanceEstimate(query);
-#else
-        return m_evaluateDHReflectanceEstimate(m_data, query);
-#endif
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateDHReflectanceEstimate(const shared::BSDFQuery &query) const {
+        return m_body.evaluateDHReflectanceEstimate(query);
     }
 };
 
