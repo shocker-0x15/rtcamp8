@@ -52,6 +52,7 @@ list(
 list(
     FILTER COMMON_SOURCES EXCLUDE REGEX
     "ext/cubd/cuda_util.*$")
+file(GLOB STB_SOURCES "ext/stb_*")
 file(
     GLOB IMGUI_BACKEND_SOURCES
     "ext/imgui/backends/imgui_impl_glfw*"
@@ -60,6 +61,7 @@ file(
 set(
     COMMON_SOURCES
     ${COMMON_SOURCES}
+    ${STB_SOURCES}
     ${IMGUI_BACKEND_SOURCES}
 )
 # foreach(f IN LISTS COMMON_SOURCES)

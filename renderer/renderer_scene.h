@@ -142,11 +142,15 @@ extern GPUEnvironment g_gpuEnv;
 
 
 
+class Texture2D;
 class SurfaceMaterial;
+class Geometry;
+class GeometryGroup;
+class Instance;
 
 
 
-class SceneMemory {
+class Scene {
     static constexpr uint32_t maxNumMaterials = 1 << 10;
     static constexpr uint32_t maxNumGeometryInstances = 1 << 16;
     static constexpr uint32_t maxNumInstances = 1 << 16;
@@ -159,9 +163,14 @@ class SceneMemory {
     cudau::TypedBuffer<shared::SurfaceMaterial> m_surfaceMaterialBuffer;
     cudau::TypedBuffer<shared::GeometryInstance> m_geometryInstanceBuffer;
     cudau::TypedBuffer<shared::Instance> m_instanceBuffer;
+    std::unordered_map<uint32_t, Ref<SurfaceMaterial>> m_surfaceMaterialSlotOwners;
+    std::unordered_map<uint32_t, Ref<Geometry>> m_geometryInstanceSlotOwners;
+    std::unordered_map<uint32_t, Ref<Instance>> m_instanceSlotOwners;
 
 public:
     void initialize() {
+        m_optixScene = g_gpuEnv.optixContext.createScene();
+
         m_surfaceMaterialSlotFinder.initialize(maxNumMaterials);
         m_surfaceMaterialBuffer.initialize(g_gpuEnv.cuContext, bufferType, maxNumMaterials);
         m_geometryInstanceSlotFinder.initialize(maxNumGeometryInstances);
@@ -179,38 +188,16 @@ public:
         m_surfaceMaterialSlotFinder.finalize();
     }
 
-    uint32_t allocateSurfaceMaterial() {
-        uint32_t slot = m_surfaceMaterialSlotFinder.getFirstAvailableSlot();
-        Assert(slot != 0xFFFFFFFF, "failed to allocate a SurfaceMaterial.");
-        return slot;
-    }
+    void allocateSurfaceMaterial(const Ref<SurfaceMaterial> &surfMat);
 
-    uint32_t allocateGeometryInstance() {
-        uint32_t slot = m_geometryInstanceSlotFinder.getFirstAvailableSlot();
-        Assert(slot != 0xFFFFFFFF, "failed to allocate a GeometryInstance.");
-        return slot;
-    }
+    void allocateGeometryInstance(const Ref<Geometry> &geom);
 
-    uint32_t allocateInstance() {
-        uint32_t slot = m_instanceSlotFinder.getFirstAvailableSlot();
-        Assert(slot != 0xFFFFFFFF, "failed to allocate an Instance.");
-        return slot;
-    }
+    void allocateGeometryAccelerationStructure(const Ref<GeometryGroup> &geomGroup);
+
+    void allocateInstance(const Ref<Instance> &inst);
 };
 
-extern SceneMemory g_sceneMem;
-
-
-
-class SurfaceMaterial {
-    uint32_t m_slot;
-
-public:
-    SurfaceMaterial();
-    ~SurfaceMaterial() {}
-
-    virtual void setupDeviceType(shared::SurfaceMaterial* deviceData) const = 0;
-};
+extern Scene g_scene;
 
 
 
@@ -228,7 +215,6 @@ public:
         m_sampler.setXyFilterMode(cudau::TextureFilterMode::Linear);
         m_sampler.setMipMapFilterMode(cudau::TextureFilterMode::Point);
     }
-
     ~Texture2D() {
         if (m_texObject)
             /*CUDADRV_CHECK(*/cuTexObjectDestroy(m_texObject)/*)*/;
@@ -266,7 +252,39 @@ public:
 
 
 
-class SimplePBRSurfaceMaterial : SurfaceMaterial {
+class SurfaceMaterial {
+    uint32_t m_slot;
+    Ref<Texture2D> m_emittance;
+
+public:
+    SurfaceMaterial() : m_slot(0xFFFFFFFF) {}
+    ~SurfaceMaterial() {}
+
+    void associateScene(uint32_t slot) {
+        m_slot = slot;
+    }
+
+    void setEmittance(const Ref<Texture2D> &emittance) {
+        m_emittance = emittance;
+    }
+
+    bool isEmissive() const {
+        return m_emittance != nullptr;
+    }
+
+    uint32_t getSlot() const {
+        return m_slot;
+    }
+
+    virtual void setupDeviceType(shared::SurfaceMaterial* deviceData) const {
+        if (m_emittance)
+            deviceData->emittance = m_emittance->getDeviceTexture();
+    }
+};
+
+
+
+class SimplePBRSurfaceMaterial : public SurfaceMaterial {
     static uint32_t s_procSetSlot;
 
     Ref<Texture2D> m_baseColor_opacity;
@@ -284,13 +302,17 @@ public:
         s_procSetSlot = g_gpuEnv.registerBSDFProcedureSet(procSet);
     }
 
-    SimplePBRSurfaceMaterial(
+    SimplePBRSurfaceMaterial() {}
+
+    void set(
         const Ref<Texture2D> &baseColor_opacity,
-        const Ref<Texture2D> &occlusion_roughness_metallic) :
-        m_baseColor_opacity(baseColor_opacity),
-        m_occlusion_roughness_metallic(occlusion_roughness_metallic) {}
+        const Ref<Texture2D> &occlusion_roughness_metallic) {
+        m_baseColor_opacity = baseColor_opacity;
+        m_occlusion_roughness_metallic = occlusion_roughness_metallic;
+    }
 
     void setupDeviceType(shared::SurfaceMaterial* deviceData) const override {
+        SurfaceMaterial::setupDeviceType(deviceData);
         auto &body = *reinterpret_cast<shared::SimplePBRSurfaceMaterial*>(deviceData->body);
         body.baseColor_opacity = m_baseColor_opacity->getDeviceTexture();
         body.baseColor_opacity_dimInfo = m_occlusion_roughness_metallic->getDimInfo();
@@ -303,43 +325,139 @@ public:
 
 
 
-class Geometry {
-    uint32_t m_slot;
-
-public:
-    Geometry();
-    ~Geometry();
+enum class BumpMapTextureType {
+    NormalMap = 0,
+    NormalMap_BC,
+    NormalMap_BC_2ch,
+    HeightMap,
+    HeightMap_BC,
 };
 
 
 
-class TriangleMesh : public Geometry {
-    TypedBufferRef<shared::Vertex> m_vertices;
-    TypedBufferRef<shared::Triangle> m_triangles;
-    Ref<Texture2D> m_normalMap;
-    Ref<SurfaceMaterial> m_material;
+struct VertexBuffer {
+    std::vector<shared::Vertex> onHost;
+    cudau::TypedBuffer<shared::Vertex> onDevice;
+};
+
+
+
+class Geometry {
+protected:
+    optixu::GeometryInstance m_optixGeomInst;
+    uint32_t m_slot;
+    BoundingBox3D m_aabb;
 
 public:
-    TriangleMesh(
-        const TypedBufferRef<shared::Vertex> &vertices,
-        const TypedBufferRef<shared::Triangle> &triangles,
-        const Ref<Texture2D> &normalMap,
-        const Ref<SurfaceMaterial> &material) :
-        m_vertices(vertices), m_triangles(triangles), m_normalMap(normalMap),
-        m_material(material) {}
+    Geometry() : m_slot(0xFFFFFFFF) {}
+    virtual ~Geometry() {}
+
+    virtual void associateScene(uint32_t slot, optixu::GeometryInstance optixGeomInst) {
+        m_slot = slot;
+        m_optixGeomInst = optixGeomInst;
+    }
+
+    const BoundingBox3D &getAABB() const {
+        return m_aabb;
+    }
+
+    optixu::GeometryInstance getOptixGeometryInstance() const {
+        return m_optixGeomInst;
+    }
+
+    virtual void setupDeviceType(shared::GeometryInstance* deviceData) const {}
+};
+
+
+
+class TriangleMeshGeometry : public Geometry {
+    Ref<VertexBuffer> m_vertices;
+    cudau::TypedBuffer<shared::Triangle> m_triangles;
+    Ref<Texture2D> m_normalMap;
+    Ref<SurfaceMaterial> m_surfMat;
+    BumpMapTextureType m_bumpMapType;
+
+public:
+    TriangleMeshGeometry() : m_bumpMapType(BumpMapTextureType::NormalMap_BC_2ch) {}
+    ~TriangleMeshGeometry() {
+        m_triangles.finalize();
+    }
+
+    void set(
+        const Ref<VertexBuffer> &vertices,
+        const std::vector<shared::Triangle> &triangles,
+        const Ref<Texture2D> &normalMap, BumpMapTextureType bumpMapType,
+        const Ref<SurfaceMaterial> &surfMat) {
+        m_vertices = vertices;
+        m_triangles.initialize(g_gpuEnv.cuContext, bufferType, triangles);
+        m_normalMap = normalMap;
+        m_bumpMapType = bumpMapType;
+        m_surfMat = surfMat;
+        m_aabb = BoundingBox3D();
+        for (int triIdx = 0; triIdx < triangles.size(); ++triIdx) {
+            const shared::Triangle &tri = triangles[triIdx];
+            const shared::Vertex(&vs)[3] = {
+                vertices->onHost[tri.indices[0]],
+                vertices->onHost[tri.indices[1]],
+                vertices->onHost[tri.indices[2]],
+            };
+            m_aabb
+                .unify(vs[0].position)
+                .unify(vs[1].position)
+                .unify(vs[2].position);
+        }
+
+        m_optixGeomInst.setVertexBuffer(m_vertices->onDevice);
+        m_optixGeomInst.setTriangleBuffer(m_triangles);
+    }
+
+    void setupDeviceType(shared::GeometryInstance* deviceData) const override {
+        Geometry::setupDeviceType(deviceData);
+        deviceData->vertices = m_vertices->onDevice.getDevicePointer();
+        deviceData->triangles = m_triangles.getDevicePointer();
+        deviceData->normal = m_normalMap->getDeviceTexture();
+        deviceData->normalDimInfo = m_normalMap->getDimInfo();
+        if (m_bumpMapType == BumpMapTextureType::NormalMap ||
+            m_bumpMapType == BumpMapTextureType::NormalMap_BC)
+            deviceData->readModifiedNormal = CallableProgram_readModifiedNormalFromNormalMap;
+        else if (m_bumpMapType == BumpMapTextureType::NormalMap_BC_2ch)
+            deviceData->readModifiedNormal = CallableProgram_readModifiedNormalFromNormalMap2ch;
+        else
+            deviceData->readModifiedNormal = CallableProgram_readModifiedNormalFromHeightMap;
+        deviceData->surfMatSlot = m_surfMat->getSlot();
+    }
 };
 
 
 
 class GeometryGroup {
-    std::vector<Ref<Geometry>> m_geometries;
+    optixu::GeometryAccelerationStructure m_optixGas;
+    std::set<Ref<Geometry>> m_geometries;
+    BoundingBox3D m_aabb;
 
-    cudau::Buffer m_asScratchMem;
-    cudau::Buffer m_asMem;
+    cudau::Buffer m_optixAsScratchMem;
+    cudau::Buffer m_optixAsMem;
     uint32_t m_dirty : 1;
 public:
-    GeometryGroup() :
-        m_dirty(true) {}
+    GeometryGroup() : m_dirty(false) {}
+
+    void associateScene(optixu::GeometryAccelerationStructure optixGas) {
+        m_optixGas = optixGas;
+    }
+
+    void set(const std::set<Ref<Geometry>> &geoms) {
+        m_dirty = true;
+        m_aabb = BoundingBox3D();
+        for (const Ref<Geometry> &geom : geoms) {
+            m_geometries.insert(geom);
+            m_optixGas.addChild(geom->getOptixGeometryInstance());
+            m_aabb.unify(geom->getAABB());
+        }
+    }
+
+    const BoundingBox3D &getAABB() const {
+        return m_aabb;
+    }
 };
 
 
@@ -354,11 +472,28 @@ struct KeyInstanceState {
 
 
 class Instance {
+    optixu::Instance m_optixInst;
     uint32_t m_slot;
     std::vector<KeyInstanceState> m_keyStates;
+    Ref<GeometryGroup> m_geomGroup;
+    Matrix4x4 m_staticTransform;
 
 public:
-    Instance();
+    Instance() : m_slot(0xFFFFFFFF) {}
+
+    void associateScene(uint32_t slot, optixu::Instance optixInst) {
+        m_slot = slot;
+        m_optixInst = optixInst;
+    }
+
+    void setGeometryGroup(const Ref<GeometryGroup> &geomGroup, const Matrix4x4 &staticTransform) {
+        m_geomGroup = geomGroup;
+        m_staticTransform = staticTransform;
+    }
+
+    void setKeyStates(const std::vector<KeyInstanceState> &states) {
+        m_keyStates = states;
+    }
 };
 
 
@@ -377,11 +512,33 @@ class Camera {
     std::vector<KeyCameraState> m_keyStates;
 
 public:
-    Camera() {}
+    Camera(const std::vector<KeyCameraState> &keyStates) :
+        m_keyStates(keyStates) {}
 };
 
 
 
-void loadScene(const std::filesystem::path &filePath);
+struct ActiveCameraInfo {
+    float timePoint;
+    std::string name;
+};
+
+struct RenderConfigs {
+    uint32_t imageWidth;
+    uint32_t imageHeight;
+    float timeBegin;
+    float timeEnd;
+    uint32_t fps;
+
+    std::map<std::string, Ref<Camera>> cameras;
+    std::vector<ActiveCameraInfo> activeCameraInfos;
+
+    std::vector<Ref<SurfaceMaterial>> surfaceMaterials;
+    std::vector<Ref<Geometry>> geometries;
+    std::vector<Ref<GeometryGroup>> geometryGroups;
+    std::vector<Ref<Instance>> instances;
+};
+
+void loadScene(const std::filesystem::path &filePath, RenderConfigs* renderConfigs);
 
 } // namespace rtc8

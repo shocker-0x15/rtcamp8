@@ -876,8 +876,8 @@ struct Matrix3x3Template {
     }
 
     CUDA_COMMON_FUNCTION constexpr Matrix3x3Template& transpose() {
-        swap(m10, m01); swap(m20, m02);
-        swap(m21, m12);
+        _swap(m10, m01); _swap(m20, m02);
+        _swap(m21, m12);
         return *this;
     }
 
@@ -1114,9 +1114,9 @@ struct Matrix4x4Template {
     }
 
     CUDA_COMMON_FUNCTION constexpr Matrix4x4Template &transpose() {
-        swap(&m10, &m01); swap(&m20, &m02); swap(&m30, &m03);
-        swap(&m21, &m12); swap(&m31, &m13);
-        swap(&m32, &m23);
+        _swap(m10, m01); _swap(m20, m02); _swap(m30, m03);
+        _swap(m21, m12); _swap(m31, m13);
+        _swap(m32, m23);
         return *this;
     }
 
@@ -1265,10 +1265,10 @@ struct QuaternionTemplate {
         return v.allFinite() && isfinite(w);
     }
 
-    CUDA_COMMON_FUNCTION /*constexpr*/ RealType &squaredLength() const {
+    CUDA_COMMON_FUNCTION /*constexpr*/ RealType squaredLength() const {
         return pow2(x) + pow2(y) + pow2(z) + pow2(w);
     }
-    CUDA_COMMON_FUNCTION /*constexpr*/ RealType &length() const {
+    CUDA_COMMON_FUNCTION /*constexpr*/ RealType length() const {
         return std::sqrt(squaredLength());
     }
     CUDA_COMMON_FUNCTION /*constexpr*/ QuaternionTemplate &normalize() {
@@ -2269,7 +2269,7 @@ CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType> qRot
 
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType> slerp(
-    RealType t, const QuaternionTemplate<RealType> &qa, const QuaternionTemplate<RealType> &qb) {
+    const QuaternionTemplate<RealType> &qa, const QuaternionTemplate<RealType> &qb, RealType t) {
     RealType cosTheta = dot(qa, qb);
     if (cosTheta > static_cast<RealType>(0.9995))
         return normalize((1 - t) * qa + t * qb);

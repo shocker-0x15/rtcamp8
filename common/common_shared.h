@@ -209,7 +209,7 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr T clamp(const T &v, const T &minv, co
 }
 
 template <typename T>
-CUDA_COMMON_FUNCTION CUDA_INLINE constexpr T swap(T &a, T &b) {
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr void _swap(T &a, T &b) {
     T temp = std::move(a);
     a = std::move(b);
     b = std::move(temp);

@@ -74,10 +74,10 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
 
     g_gpuEnv.setupDeviceData();
 
+    g_scene.initialize();
 
-
-    g_sceneMem.initialize();
-    loadScene(argv[1]);
+    RenderConfigs renderConfigs;
+    loadScene(argv[1], &renderConfigs);
 
     CUstream cuStreams[2];
     for (int bufIdx = 0; bufIdx < 2; ++bufIdx)
@@ -342,7 +342,7 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
     for (int bufIdx = 0; bufIdx < 2; ++bufIdx)
         CUDADRV_CHECK(cuStreamDestroy(cuStreams[bufIdx]));
 
-    g_sceneMem.finalize();
+    g_scene.finalize();
     g_gpuEnv.finalize();
 
 	return 0;
