@@ -23,8 +23,14 @@ struct GPUEnvironment {
     CUcontext cuContext;
     optixu::Context optixContext;
 
+    CUmodule postProcessKernelsModule;
+    CUdeviceptr plpForPostProcessKernelsModule;
+    cudau::Kernel applyToneMap;
+
     cudau::TypedBuffer<shared::BSDFProcedureSet> bsdfProcedureSetBuffer;
     std::vector<shared::BSDFProcedureSet> mappedBsdfProcedureSets;
+
+    optixu::Material optixDefaultMaterial;
 
     template <typename EntryPointType>
     struct Pipeline {
@@ -34,7 +40,6 @@ struct GPUEnvironment {
         std::unordered_map<std::string, optixu::ProgramGroup> programs;
         std::vector<optixu::ProgramGroup> callablePrograms;
         cudau::Buffer sbt;
-        cudau::Buffer hitGroupSbt;
 
         void setEntryPoint(EntryPointType et) {
             optixPipeline.setRayGenerationProgram(entryPoints.at(et));
@@ -43,16 +48,30 @@ struct GPUEnvironment {
 
     Pipeline<PathTracingEntryPoint> pathTracing;
 
-    optixu::Material optixDefaultMaterial;
-
     void initialize() {
+        const std::filesystem::path exeDir = getExecutableDirectory();
+
         CUDADRV_CHECK(cuInit(0));
         CUDADRV_CHECK(cuCtxCreate(&cuContext, 0, 0));
         CUDADRV_CHECK(cuCtxSetCurrent(cuContext));
 
         optixContext = optixu::Context::create(cuContext/*, 4, DEBUG_SELECT(true, false)*/);
 
+
+
+        size_t symbolSize;
+
+        CUDADRV_CHECK(cuModuleLoad(
+            &postProcessKernelsModule,
+            (exeDir / "renderer/ptxes/post_process_kernels.ptx").string().c_str()));
+        applyToneMap.set(postProcessKernelsModule, "applyToneMap", cudau::dim3(8, 8), 0);
+        CUDADRV_CHECK(cuModuleGetGlobal(
+            &plpForPostProcessKernelsModule, &symbolSize, postProcessKernelsModule, "plp"));
+
+
+
         optixDefaultMaterial = optixContext.createMaterial();
+
         optixu::Module emptyModule;
 
         {
@@ -165,7 +184,15 @@ class Scene {
     cudau::TypedBuffer<shared::Instance> m_instanceBuffer;
     std::unordered_map<uint32_t, Ref<SurfaceMaterial>> m_surfaceMaterialSlotOwners;
     std::unordered_map<uint32_t, Ref<Geometry>> m_geometryInstanceSlotOwners;
+    std::unordered_set<Ref<GeometryGroup>> m_geometryGroups;
     std::unordered_map<uint32_t, Ref<Instance>> m_instanceSlotOwners;
+
+    optixu::InstanceAccelerationStructure m_optixIas;
+    cudau::Buffer m_optixAsScratchMem;
+    cudau::Buffer m_optixAsMem;
+    cudau::TypedBuffer<OptixInstance> m_optixInstanceBuffer;
+
+    cudau::Buffer m_hitGroupSbt;
 
 public:
     void initialize() {
@@ -177,16 +204,16 @@ public:
         m_geometryInstanceBuffer.initialize(g_gpuEnv.cuContext, bufferType, maxNumGeometryInstances);
         m_instanceSlotFinder.initialize(maxNumInstances);
         m_instanceBuffer.initialize(g_gpuEnv.cuContext, bufferType, maxNumInstances);
+
+        m_optixIas = m_optixScene.createInstanceAccelerationStructure();
+        m_optixIas.setConfiguration(optixu::ASTradeoff::PreferFastTrace, false, false, false);
     }
 
     void finalize() {
-        m_instanceBuffer.finalize();
-        m_instanceSlotFinder.finalize();
-        m_geometryInstanceBuffer.finalize();
-        m_geometryInstanceSlotFinder.finalize();
-        m_surfaceMaterialBuffer.finalize();
-        m_surfaceMaterialSlotFinder.finalize();
+
     }
+
+
 
     void allocateSurfaceMaterial(const Ref<SurfaceMaterial> &surfMat);
 
@@ -195,6 +222,24 @@ public:
     void allocateGeometryAccelerationStructure(const Ref<GeometryGroup> &geomGroup);
 
     void allocateInstance(const Ref<Instance> &inst);
+
+
+
+    shared::SurfaceMaterial* getSurfaceMaterialsOnDevice() const {
+        return m_surfaceMaterialBuffer.getDevicePointer();
+    }
+
+    shared::GeometryInstance* getGeometryInstancesOnDevice() const {
+        return m_geometryInstanceBuffer.getDevicePointer();
+    }
+
+    shared::Instance* getInstancesOnDevice() const {
+        return m_instanceBuffer.getDevicePointer();
+    }
+
+
+
+    OptixTraversableHandle buildASs(CUstream stream, float timePoint);
 };
 
 extern Scene g_scene;
@@ -253,15 +298,18 @@ public:
 
 
 class SurfaceMaterial {
+protected:
     uint32_t m_slot;
     Ref<Texture2D> m_emittance;
+    uint32_t m_dirty : 1;
 
 public:
-    SurfaceMaterial() : m_slot(0xFFFFFFFF) {}
+    SurfaceMaterial() : m_slot(0xFFFFFFFF), m_dirty(false) {}
     ~SurfaceMaterial() {}
 
     void associateScene(uint32_t slot) {
         m_slot = slot;
+        m_dirty = true;
     }
 
     void setEmittance(const Ref<Texture2D> &emittance) {
@@ -276,7 +324,7 @@ public:
         return m_slot;
     }
 
-    virtual void setupDeviceType(shared::SurfaceMaterial* deviceData) const {
+    virtual void setUpDeviceType(shared::SurfaceMaterial* deviceData)  {
         if (m_emittance)
             deviceData->emittance = m_emittance->getDeviceTexture();
     }
@@ -309,10 +357,15 @@ public:
         const Ref<Texture2D> &occlusion_roughness_metallic) {
         m_baseColor_opacity = baseColor_opacity;
         m_occlusion_roughness_metallic = occlusion_roughness_metallic;
+
+        m_dirty = true;
     }
 
-    void setupDeviceType(shared::SurfaceMaterial* deviceData) const override {
-        SurfaceMaterial::setupDeviceType(deviceData);
+    void setUpDeviceType(shared::SurfaceMaterial* deviceData) override {
+        if (!m_dirty)
+            return;
+
+        SurfaceMaterial::setUpDeviceType(deviceData);
         auto &body = *reinterpret_cast<shared::SimplePBRSurfaceMaterial*>(deviceData->body);
         body.baseColor_opacity = m_baseColor_opacity->getDeviceTexture();
         body.baseColor_opacity_dimInfo = m_occlusion_roughness_metallic->getDimInfo();
@@ -320,6 +373,8 @@ public:
         body.occlusion_roughness_metallic_dimInfo = m_occlusion_roughness_metallic->getDimInfo();
         deviceData->bsdfProcSetSlot = s_procSetSlot;
         deviceData->setupBSDFBody = CallableProgram_setupSimplePBR_BRDF;
+
+        m_dirty = false;
     }
 };
 
@@ -347,14 +402,16 @@ protected:
     optixu::GeometryInstance m_optixGeomInst;
     uint32_t m_slot;
     BoundingBox3D m_aabb;
+    uint32_t m_dirty : 1;
 
 public:
-    Geometry() : m_slot(0xFFFFFFFF) {}
+    Geometry() : m_slot(0xFFFFFFFF), m_dirty(false) {}
     virtual ~Geometry() {}
 
     virtual void associateScene(uint32_t slot, optixu::GeometryInstance optixGeomInst) {
         m_slot = slot;
         m_optixGeomInst = optixGeomInst;
+        m_dirty = true;
     }
 
     const BoundingBox3D &getAABB() const {
@@ -365,7 +422,11 @@ public:
         return m_optixGeomInst;
     }
 
-    virtual void setupDeviceType(shared::GeometryInstance* deviceData) const {}
+    uint32_t getSlot() const {
+        return m_slot;
+    }
+
+    virtual void setUpDeviceType(shared::GeometryInstance* deviceData) {}
 };
 
 
@@ -409,10 +470,15 @@ public:
 
         m_optixGeomInst.setVertexBuffer(m_vertices->onDevice);
         m_optixGeomInst.setTriangleBuffer(m_triangles);
+
+        m_dirty = true;
     }
 
-    void setupDeviceType(shared::GeometryInstance* deviceData) const override {
-        Geometry::setupDeviceType(deviceData);
+    void setUpDeviceType(shared::GeometryInstance* deviceData) override {
+        if (!m_dirty)
+            return;
+
+        Geometry::setUpDeviceType(deviceData);
         deviceData->vertices = m_vertices->onDevice.getDevicePointer();
         deviceData->triangles = m_triangles.getDevicePointer();
         deviceData->normal = m_normalMap->getDeviceTexture();
@@ -425,6 +491,7 @@ public:
         else
             deviceData->readModifiedNormal = CallableProgram_readModifiedNormalFromHeightMap;
         deviceData->surfMatSlot = m_surfMat->getSlot();
+        m_dirty = false;
     }
 };
 
@@ -437,26 +504,67 @@ class GeometryGroup {
 
     cudau::Buffer m_optixAsScratchMem;
     cudau::Buffer m_optixAsMem;
+    cudau::TypedBuffer<uint32_t> m_geomInstSlotBuffer;
+    LightDistribution m_lightGeomInstDist;
     uint32_t m_dirty : 1;
+
 public:
     GeometryGroup() : m_dirty(false) {}
 
     void associateScene(optixu::GeometryAccelerationStructure optixGas) {
         m_optixGas = optixGas;
+        m_dirty = true;
     }
 
     void set(const std::set<Ref<Geometry>> &geoms) {
-        m_dirty = true;
         m_aabb = BoundingBox3D();
+        std::vector<uint32_t> geomInstSlots(geoms.size());
+        uint32_t nextIndex = 0;
         for (const Ref<Geometry> &geom : geoms) {
             m_geometries.insert(geom);
             m_optixGas.addChild(geom->getOptixGeometryInstance());
             m_aabb.unify(geom->getAABB());
+            geomInstSlots[nextIndex] = geom->getSlot();
+            ++nextIndex;
         }
+        m_geomInstSlotBuffer.initialize(g_gpuEnv.cuContext, bufferType, geomInstSlots);
+        m_lightGeomInstDist.initialize(g_gpuEnv.cuContext, bufferType, nullptr, geomInstSlots.size());
+        m_dirty = true;
     }
 
     const BoundingBox3D &getAABB() const {
         return m_aabb;
+    }
+
+    optixu::GeometryAccelerationStructure getOptixGAS() const {
+        return m_optixGas;
+    }
+
+    void buildAS(CUstream stream) {
+        if (!m_dirty)
+            return;
+
+        OptixAccelBufferSizes sizes;
+        m_optixGas.prepareForBuild(&sizes);
+
+        if (!m_optixAsMem.isInitialized())
+            m_optixAsMem.initialize(g_gpuEnv.cuContext, bufferType, sizes.outputSizeInBytes, 1);
+        else if (m_optixAsMem.sizeInBytes() < sizes.outputSizeInBytes)
+            m_optixAsMem.resize(sizes.outputSizeInBytes, 1);
+
+        if (!m_optixAsScratchMem.isInitialized())
+            m_optixAsScratchMem.initialize(g_gpuEnv.cuContext, bufferType, sizes.tempSizeInBytes, 1);
+        else if (m_optixAsScratchMem.sizeInBytes() < sizes.tempSizeInBytes)
+            m_optixAsScratchMem.resize(sizes.tempSizeInBytes, 1);
+
+        m_optixGas.rebuild(stream, m_optixAsMem, m_optixAsScratchMem);
+
+        m_dirty = false;
+    }
+
+    void setUpDeviceData(shared::Instance* deviceData) {
+        deviceData->geomInstSlots = m_geomInstSlotBuffer.getDevicePointer();
+        m_lightGeomInstDist.getDeviceType(&deviceData->lightGeomInstDist);
     }
 };
 
@@ -477,22 +585,62 @@ class Instance {
     std::vector<KeyInstanceState> m_keyStates;
     Ref<GeometryGroup> m_geomGroup;
     Matrix4x4 m_staticTransform;
+    float m_lastTimePoint;
+    uint32_t m_dirty : 1;
 
 public:
-    Instance() : m_slot(0xFFFFFFFF) {}
+    Instance() : m_slot(0xFFFFFFFF), m_lastTimePoint(NAN), m_dirty(false) {}
 
     void associateScene(uint32_t slot, optixu::Instance optixInst) {
         m_slot = slot;
         m_optixInst = optixInst;
+        m_dirty = true;
     }
 
     void setGeometryGroup(const Ref<GeometryGroup> &geomGroup, const Matrix4x4 &staticTransform) {
+        m_optixInst.setChild(geomGroup->getOptixGAS());
         m_geomGroup = geomGroup;
         m_staticTransform = staticTransform;
+        m_dirty = true;
     }
 
     void setKeyStates(const std::vector<KeyInstanceState> &states) {
         m_keyStates = states;
+        m_dirty = true;
+    }
+
+    void setUpDeviceType(shared::Instance* deviceData, float timePoint) {
+        uint32_t numStates = static_cast<uint32_t>(m_keyStates.size());
+        int idx = 0;
+        for (int d = nextPowerOf2(numStates) >> 1; d >= 1; d >>= 1) {
+            if (idx + d >= numStates)
+                continue;
+            const KeyInstanceState &keyState = m_keyStates[idx + d];
+            if (keyState.timePoint <= timePoint)
+                idx += d;
+        }
+        KeyInstanceState states[2];
+        states[0] = m_keyStates[idx];
+        states[1] = m_keyStates[std::min(static_cast<uint32_t>(idx) + 1, numStates - 1)];
+        float t = safeDivide(timePoint - states[0].timePoint, states[1].timePoint - states[0].timePoint);
+        float scale = lerp(states[0].scale, states[1].scale, t);
+        Quaternion orientation = slerp(states[0].orientation, states[1].orientation, t);
+        Point3D position = lerp(states[0].position, states[1].position, t);
+        Matrix4x4 transform =
+            translate4x4(position) * orientation.toMatrix4x4() * scale4x4(scale) *
+            m_staticTransform;
+
+        deviceData->transform = transform;
+        deviceData->prevTransform = transform; // TODO?
+        deviceData->uniformScale = scale;
+        m_geomGroup->setUpDeviceData(deviceData);
+
+        const float xfmArray[12] = {
+            transform.m00, transform.m01, transform.m02, transform.m03,
+            transform.m10, transform.m11, transform.m12, transform.m13,
+            transform.m20, transform.m21, transform.m22, transform.m23,
+        };
+        m_optixInst.setTransform(xfmArray);
     }
 };
 
@@ -501,7 +649,7 @@ public:
 struct KeyCameraState {
     float timePoint;
     Point3D position;
-    Point3D lookAt;
+    Point3D positionLookAt;
     Vector3D up;
     float fovY;
 };
@@ -514,6 +662,30 @@ class Camera {
 public:
     Camera(const std::vector<KeyCameraState> &keyStates) :
         m_keyStates(keyStates) {}
+
+    void setUpDeviceType(shared::PerspectiveCamera* deviceData, float timePoint) {
+        uint32_t numStates = static_cast<uint32_t>(m_keyStates.size());
+        int idx = 0;
+        for (int d = nextPowerOf2(numStates) >> 1; d >= 1; d >>= 1) {
+            if (idx + d >= numStates)
+                continue;
+            const KeyCameraState &keyState = m_keyStates[idx + d];
+            if (keyState.timePoint <= timePoint)
+                idx += d;
+        }
+        KeyCameraState states[2];
+        states[0] = m_keyStates[idx];
+        states[1] = m_keyStates[std::min(static_cast<uint32_t>(idx) + 1, numStates - 1)];
+        float t = safeDivide(timePoint - states[0].timePoint, states[1].timePoint - states[0].timePoint);
+        Point3D position = lerp(states[0].position, states[1].position, t);
+        Quaternion ori0 = qLookAt(states[0].positionLookAt - states[0].position, states[0].up);
+        Quaternion ori1 = qLookAt(states[1].positionLookAt - states[1].position, states[1].up);
+        Quaternion orientation = slerp(ori0, ori1, t);
+        float fovY = lerp(states[0].fovY, states[1].fovY, t);
+        deviceData->position = position;
+        deviceData->orientation = conjugate(orientation)/* * qRotateY(pi_v<float>)*/;
+        deviceData->fovY = fovY * pi_v<float> / 180;
+    }
 };
 
 

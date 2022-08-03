@@ -5,6 +5,8 @@ using namespace rtc8;
 using namespace rtc8::shared;
 using namespace rtc8::device;
 
+static constexpr bool debugVisualizeBaseColor = true;
+
 
 
 struct HitGroupSBTRecordData {
@@ -372,8 +374,8 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
         float sensorArea = vw * vh; // normalized
 
         rayOrigin = camera.position;
-        Vector3D localRayDir = Vector3D(vw * (0.5f - px), vh * (0.5f - py), 1).normalize();
-        rayDirection = normalize(camera.orientation * localRayDir);
+        Vector3D localRayDir = Vector3D(vw * (-0.5f + px), vh * (0.5f - py), -1).normalize();
+        rayDirection = normalize(camera.orientation.toMatrix3x3() * localRayDir);
         dirPDensity = 1 / (pow3(localRayDir.z) * sensorArea);
     }
 
@@ -405,6 +407,9 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
 
         const SurfaceMaterial &surfMat = plp.s->surfaceMaterials[geomInst.surfMatSlot];
 
+        //if (launchIndex == plp.f->mousePosition && plp.f->enableDebugPrint)
+        //    printf("Tex: %p, DC: %u\n",
+        //           geomInst.normal, geomInst.readModifiedNormal);
         if (geomInst.normal) {
             Normal3D modLocalNormal = geomInst.readModifiedNormal(
                 geomInst.normal, geomInst.normalDimInfo, surfPt.texCoord);
@@ -418,10 +423,13 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
         if (vOutLocal.z > 0 && surfMat.emittance) {
             float4 texValue = tex2DLod<float4>(surfMat.emittance, surfPt.texCoord.u, surfPt.texCoord.v, 0.0f);
             RGBSpectrum emittance(texValue.x, texValue.y, texValue.z);
-            float dist2 = squaredDistance(rayOrigin, surfPt.position);
-            float lightPDensity = surfPt.hypAreaPDensity * dist2 / vOutLocal.z;
-            float bsdfPDensity = dirPDensity;
-            float misWeight = pow2(bsdfPDensity) / (pow2(bsdfPDensity) + pow2(lightPDensity));
+            float misWeight = 1.0f;
+            if (pathLength > 1) {
+                float dist2 = squaredDistance(rayOrigin, surfPt.position);
+                float lightPDensity = surfPt.hypAreaPDensity * dist2 / vOutLocal.z;
+                float bsdfPDensity = dirPDensity;
+                misWeight = pow2(bsdfPDensity) / (pow2(bsdfPDensity) + pow2(lightPDensity));
+            }
             // Assume a diffuse emitter.
             contribution += throughput * emittance * (misWeight / pi_v<float>);
         }
@@ -436,6 +444,11 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
         bsdf.setup(surfMat, surfPt.texCoord);
         BSDFQuery bsdfQuery(vOutLocal, surfPt.toLocal(surfPt.geometricNormal));
 
+        if constexpr (debugVisualizeBaseColor) {
+            contribution += throughput * bsdf.evaluateDHReflectanceEstimate(bsdfQuery);
+            break;
+        }
+
         contribution += throughput * performNextEventEstimation(surfPt, bsdf, bsdfQuery, rng);
 
         BSDFSample bsdfSample(rng.getFloat0cTo1o(), rng.getFloat0cTo1o());
@@ -443,13 +456,20 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
         RGBSpectrum fsValue = bsdf.sampleF(bsdfQuery, bsdfSample, &bsdfResult);
         rayDirection = surfPt.fromLocal(bsdfResult.dirLocal);
         float dotSGN = dot(rayDirection, surfPt.geometricNormal);
-        throughput *= fsValue * (std::fabs(dotSGN) / bsdfResult.dirPDensity);
+        RGBSpectrum localThroughput = fsValue * (std::fabs(dotSGN) / bsdfResult.dirPDensity);
+        throughput *= localThroughput;
 
         rayOrigin = offsetRayOrigin(surfPt.position, (dotSGN > 0 ? 1 : -1) * surfPt.geometricNormal);
         dirPDensity = bsdfResult.dirPDensity;
     }
 
     plp.s->rngBuffer.write(launchIndex, rng);
+    RGBSpectrum prevResult = RGBSpectrum::Zero();
+    if (plp.f->numAccumFrames > 0)
+        prevResult = plp.s->accumBuffer.read(launchIndex);
+    float curFrameWeight = 1.0f / plp.f->numAccumFrames;
+    RGBSpectrum result = (1 - curFrameWeight) * prevResult + curFrameWeight * contribution;
+    plp.s->accumBuffer.write(launchIndex, result);
 }
 
 CUDA_DEVICE_KERNEL void RT_CH_NAME(pathTrace)() {

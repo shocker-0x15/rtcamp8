@@ -25,24 +25,6 @@ struct PathTracingRayType {
 constexpr uint32_t maxNumRayTypes = 2;
 
 
-struct PerspectiveCamera {
-    float aspect;
-    float fovY;
-    Point3D position;
-    Matrix3x3 orientation;
-
-    CUDA_COMMON_FUNCTION float2 calcScreenPosition(const Point3D &posInWorld) const {
-        Matrix3x3 invOri = invert(orientation);
-        Vector3D posInView = invOri * (posInWorld - position);
-        float2 posAtZ1 = make_float2(posInView.x / posInView.z, posInView.y / posInView.z);
-        float h = 2 * std::tan(fovY / 2);
-        float w = aspect * h;
-        return make_float2(1 - (posAtZ1.x + 0.5f * w) / w,
-                            1 - (posAtZ1.y + 0.5f * h) / h);
-    }
-};
-
-
 
 struct LightSample {
     RGBSpectrum emittance;
@@ -60,6 +42,7 @@ struct StaticPipelineLaunchParameters {
 
     int2 imageSize;
     optixu::NativeBlockBuffer2D<PCG32RNG> rngBuffer;
+    optixu::NativeBlockBuffer2D<RGBSpectrum> accumBuffer;
 };
 
 struct PerFramePipelineLaunchParameters {
@@ -72,8 +55,14 @@ struct PerFramePipelineLaunchParameters {
     float envLightRotation;
     LightDistribution lightInstDist;
 
+    optixu::NativeBlockBuffer2D<RGBSpectrum> outputBuffer;
+
+    int2 mousePosition;
+
     OptixTraversableHandle travHandle;
     PerspectiveCamera camera;
+    uint32_t numAccumFrames;
+    uint32_t enableDebugPrint : 1;
 };
 
 struct PipelineLaunchParameters {

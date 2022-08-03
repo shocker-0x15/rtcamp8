@@ -36,6 +36,7 @@ file(
     "ext/cubd/cubd.h"
     "ext/glfw/include/*"
     "ext/imgui/*"
+    "ext/tinyexr/*"
 )
 list(
     FILTER COMMON_SOURCES INCLUDE REGEX
@@ -46,6 +47,18 @@ list(
 list(
     FILTER COMMON_SOURCES EXCLUDE REGEX
     "ext/imgui/(backends|misc|examples)/.*")
+list(
+    FILTER COMMON_SOURCES EXCLUDE REGEX
+    "ext/tinyexr/deps/miniz/examples/.*")
+list(
+    FILTER COMMON_SOURCES EXCLUDE REGEX
+    "ext/tinyexr/deps/ZFP/.*")
+list(
+    FILTER COMMON_SOURCES EXCLUDE REGEX
+    "ext/tinyexr/(examples|experimental|test)/.*")
+list(
+    FILTER COMMON_SOURCES EXCLUDE REGEX
+    "ext/tinyexr/test_tinyexr.cc$")
 list(
     FILTER COMMON_SOURCES EXCLUDE REGEX
     "ext/cubd/.*(cpp|cu)$")
@@ -83,6 +96,13 @@ function(set_common_sources)
         "${CMAKE_BINARY_DIR}/ext/gl3w/src/gl3w.c"
         PARENT_SCOPE
     )
+
+    file(
+        GLOB_RECURSE COMMON_CUDA_KERNELS
+        "../common/gpu_kernels/*")
+    file(
+        GLOB_RECURSE COMMON_SHADERS
+        "../common/shaders/*")
 
     nvcuda_compile_ptx(
         SOURCES ${COMMON_CUDA_KERNELS}
@@ -131,11 +151,23 @@ function(set_common_sources)
         "non-essentials/ext/imgui" REGULAR_EXPRESSION
         "../ext/imgui/backends/.*\.(h|cpp)$")
     source_group(
+        "non-essentials/ext/tinyexr" REGULAR_EXPRESSION
+        "../ext/tinyexr/[^/]*\.(h|hpp|c|cpp)$")
+    source_group(
+        "non-essentials/ext/tinyexr/miniz" REGULAR_EXPRESSION
+        "../ext/tinyexr/deps/miniz/[^/]*\.(h|hpp|c|cpp)$")
+    source_group(
         "non-essentials/ext/cubd" REGULAR_EXPRESSION
         "../ext/cubd/[^/]*\.h$")
     source_group(
         "non-essentials/ext" REGULAR_EXPRESSION
         "../ext/[^/]*\.(h|hpp|c|cc|cpp)$")
+    source_group(
+        "non-essentials/GPU kernels" REGULAR_EXPRESSION
+        "../common/gpu_kernels/.*")
+    source_group(
+        "non-essentials/shaders" REGULAR_EXPRESSION
+        "../common/shaders/.*")
 endfunction()
 
 
@@ -254,6 +286,8 @@ target_compile_options(
 )
 target_include_directories(
     fakelib INTERFACE
+    "ext/tinyexr"
+    "ext/tinyexr/deps/miniz"
     "ext/glfw/include"
     "ext/imgui"
     "ext/assimp/include"

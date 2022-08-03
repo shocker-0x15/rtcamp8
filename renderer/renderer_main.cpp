@@ -56,6 +56,7 @@ static KeyState g_keyTiltLeft;
 static KeyState g_keyTiltRight;
 static KeyState g_keyFasterPosMovSpeed;
 static KeyState g_keySlowerPosMovSpeed;
+static KeyState g_keyDebugPrint;
 static KeyState g_buttonRotate;
 static double g_mouseX;
 static double g_mouseY;
@@ -68,6 +69,8 @@ static Quaternion g_tempCameraOrientation;
 static float3 g_cameraPosition;
 
 int32_t mainFunc(int32_t argc, const char* argv[]) {
+    const std::filesystem::path exeDir = getExecutableDirectory();
+
     g_gpuEnv.initialize();
 
     SimplePBRSurfaceMaterial::setBSDFProcedureSet();
@@ -232,6 +235,10 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
                 g_keySlowerPosMovSpeed.recordStateChange(action == GLFW_PRESS || action == GLFW_REPEAT, frameIndex);
                 break;
             }
+            case GLFW_KEY_P: {
+                g_keyDebugPrint.recordStateChange(action == GLFW_PRESS || action == GLFW_REPEAT, frameIndex);
+                break;
+            }
             default:
                 break;
             }
@@ -275,10 +282,163 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
 
 
 
+    // ----------------------------------------------------------------
+    // JP: スクリーン関連のバッファーを初期化。
+    // EN: Initialize screen-related buffers.
+
+    cudau::Array rngBuffer;
+    cudau::Array accumBuffer;
+    glu::Texture2D gfxOutputBuffer;
+    cudau::Array cudaOutputBuffer;
+    cudau::InteropSurfaceObjectHolder<2> outputBufferHolder;
+    glu::Sampler outputSampler;
+
+    outputBufferHolder.initialize({ &cudaOutputBuffer });
+    outputSampler.initialize(
+        glu::Sampler::MinFilter::Nearest, glu::Sampler::MagFilter::Nearest,
+        glu::Sampler::WrapMode::Repeat, glu::Sampler::WrapMode::Repeat);
+
+    const auto initializeScreenRelatedBuffers = [&]
+    (uint32_t screenWidth, uint32_t screenHeight) {
+        rngBuffer.initialize2D(
+            g_gpuEnv.cuContext, cudau::ArrayElementType::UInt32, (sizeof(shared::PCG32RNG) + 3) / 4,
+            cudau::ArraySurface::Enable, cudau::ArrayTextureGather::Disable,
+            screenWidth, screenHeight, 1);
+        {
+            auto rngs = rngBuffer.map<shared::PCG32RNG>();
+            std::mt19937_64 rngSeed(591842031321323413);
+            for (int y = 0; y < screenHeight; ++y) {
+                for (int x = 0; x < screenWidth; ++x) {
+                    shared::PCG32RNG &rng = rngs[y * screenWidth + x];
+                    rng.setState(rngSeed());
+                }
+            }
+            rngBuffer.unmap();
+        }
+
+        accumBuffer.initialize2D(
+            g_gpuEnv.cuContext, cudau::ArrayElementType::UInt32, nextPowerOf2((sizeof(RGBSpectrum) + 3) / 4),
+            cudau::ArraySurface::Enable, cudau::ArrayTextureGather::Disable,
+            screenWidth, screenHeight, 1);
+        gfxOutputBuffer.initialize(GL_RGBA32F, screenWidth, screenHeight, 1);
+        cudaOutputBuffer.initializeFromGLTexture2D(
+            g_gpuEnv.cuContext, gfxOutputBuffer.getHandle(),
+            cudau::ArraySurface::Enable, cudau::ArrayTextureGather::Disable);
+    };
+
+    const auto resizeScreenRelatedBuffers = [&]
+    (uint32_t screenWidth, uint32_t screenHeight) {
+        uint32_t prevWidth = rngBuffer.getWidth();
+        uint32_t prevHeight = rngBuffer.getHeight();
+
+        rngBuffer.resize(screenWidth, screenHeight);
+        if (screenWidth > prevWidth || screenHeight > prevHeight)  {
+            auto rngs = rngBuffer.map<shared::PCG32RNG>();
+            std::mt19937_64 rngSeed(591842031321323413);
+            for (int y = 0; y < screenHeight; ++y) {
+                for (int x = 0; x < screenWidth; ++x) {
+                    shared::PCG32RNG &rng = rngs[y * screenWidth + x];
+                    rng.setState(rngSeed());
+                }
+            }
+            rngBuffer.unmap();
+        }
+
+        cudaOutputBuffer.finalize();
+        gfxOutputBuffer.finalize();
+        accumBuffer.resize(screenWidth, screenHeight);
+        gfxOutputBuffer.initialize(GL_RGBA32F, screenWidth, screenHeight, 1);
+        cudaOutputBuffer.initializeFromGLTexture2D(
+            g_gpuEnv.cuContext, gfxOutputBuffer.getHandle(),
+            cudau::ArraySurface::Enable, cudau::ArrayTextureGather::Disable);
+    };
+
+    const auto finalizeScreenRelatedBuffers = [&]
+    () {
+        cudaOutputBuffer.finalize();
+        gfxOutputBuffer.finalize();
+        accumBuffer.finalize();
+
+        rngBuffer.finalize();
+    };
+
+    initializeScreenRelatedBuffers(renderTargetSizeX, renderTargetSizeY);
+
+    // END: Initialize screen-related buffers.
+    // ----------------------------------------------------------------
+
+
+
+    // JP: フルスクリーンクアッド(or 三角形)用の空のVAO。
+    // EN: Empty VAO for full screen qud (or triangle).
+    glu::VertexArray vertexArrayForFullScreen;
+    vertexArrayForFullScreen.initialize();
+
+    // JP: OptiXの結果をフレームバッファーにコピーするシェーダー。
+    // EN: Shader to copy OptiX result to a frame buffer.
+    glu::GraphicsProgram drawOptiXResultShader;
+    drawOptiXResultShader.initializeVSPS(
+        readTxtFile(exeDir / "renderer/shaders/drawOptiXResult.vert"),
+        readTxtFile(exeDir / "renderer/shaders/drawOptiXResult.frag"));
+
+
+
+    shared::StaticPipelineLaunchParameters staticPlpOnHost;
+    {
+        staticPlpOnHost.bsdfProcedureSets = g_gpuEnv.bsdfProcedureSetBuffer.getDevicePointer();
+        staticPlpOnHost.surfaceMaterials = g_scene.getSurfaceMaterialsOnDevice();
+        staticPlpOnHost.geometryInstances = g_scene.getGeometryInstancesOnDevice();
+
+        staticPlpOnHost.imageSize = int2(renderTargetSizeX, renderTargetSizeY);
+        staticPlpOnHost.rngBuffer = rngBuffer.getSurfaceObject(0);
+        staticPlpOnHost.accumBuffer = accumBuffer.getSurfaceObject(0);
+    }
+    CUdeviceptr staticPlpOnDevice;
+    CUDADRV_CHECK(cuMemAlloc(&staticPlpOnDevice, sizeof(staticPlpOnHost)));
+    CUDADRV_CHECK(cuMemcpyHtoD(staticPlpOnDevice, &staticPlpOnHost, sizeof(staticPlpOnHost)));
+
+
+
+    shared::PerFramePipelineLaunchParameters perFramePlpOnHost;
+    {
+
+    }
+    CUdeviceptr perFramePlpOnDevice;
+    CUDADRV_CHECK(cuMemAlloc(&perFramePlpOnDevice, sizeof(perFramePlpOnHost)));
+
+
+
+    shared::PipelineLaunchParameters plpOnHost;
+    plpOnHost.s = reinterpret_cast<shared::StaticPipelineLaunchParameters*>(staticPlpOnDevice);
+    plpOnHost.f = reinterpret_cast<shared::PerFramePipelineLaunchParameters*>(perFramePlpOnDevice);
+    CUdeviceptr plpOnDevice;
+    CUDADRV_CHECK(cuMemAlloc(&plpOnDevice, sizeof(plpOnHost)));
+    CUDADRV_CHECK(cuMemcpyHtoD(plpOnDevice, &plpOnHost, sizeof(plpOnHost)));
+    CUDADRV_CHECK(cuMemcpyHtoD(g_gpuEnv.plpForPostProcessKernelsModule, &plpOnHost, sizeof(plpOnHost)));
+
+
+
+    shared::PerspectiveCamera cameras[2];
+
     uint64_t frameIndex = 0;
+    glfwSetWindowUserPointer(window, &frameIndex);
+    uint32_t numAccumFrames = 0;
+    float timePoint = renderConfigs.timeBegin;
+    bool enableFreeCamera = false;
+    Ref<Camera> activeCamera;
+    {
+        const ActiveCameraInfo &activeCamInfo = renderConfigs.activeCameraInfos[0];
+        activeCamera = renderConfigs.cameras.at(activeCamInfo.name);
+    }
+
     while (true) {
         uint32_t curBufIdx = frameIndex % 2;
+        uint32_t prevBufIdx = (frameIndex + 1) % 2;
         CUstream &curCuStream = cuStreams[curBufIdx];
+        //CUstream &prevCuStream = cuStreams[prevBufIdx];
+        CUstream &prevCuStream = cuStreams[curBufIdx];
+        shared::PerspectiveCamera curCamera = cameras[curBufIdx];
+        shared::PerspectiveCamera prevCamera = cameras[prevBufIdx];
 
         if (glfwWindowShouldClose(window))
             break;
@@ -294,6 +454,19 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
 
             renderTargetSizeX = curFBWidth / UIScaling;
             renderTargetSizeY = curFBHeight / UIScaling;
+
+            glFinish();
+            CUDADRV_CHECK(cuStreamSynchronize(prevCuStream));
+            CUDADRV_CHECK(cuStreamSynchronize(curCuStream));
+
+            resizeScreenRelatedBuffers(renderTargetSizeX, renderTargetSizeY);
+
+            {
+                staticPlpOnHost.imageSize = int2(renderTargetSizeX, renderTargetSizeY);
+                staticPlpOnHost.rngBuffer = rngBuffer.getSurfaceObject(0);
+                staticPlpOnHost.accumBuffer = accumBuffer.getSurfaceObject(0);
+            }
+            CUDADRV_CHECK(cuMemcpyHtoD(staticPlpOnDevice, &staticPlpOnHost, sizeof(staticPlpOnHost)));
 
             resized = true;
         }
@@ -314,12 +487,88 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
 
 
 
+        bool newSequence = resized || frameIndex == 0/* || resetAccumulation*/;
+        bool firstAccumFrame =
+            /*animate || !enableAccumulation || cameraIsActuallyMoving || */newSequence;
+        if (firstAccumFrame)
+            numAccumFrames = 1;
+        else
+            numAccumFrames = /*std::min(*/numAccumFrames + 1/*, (1u << log2MaxNumAccums))*/;
+        if (newSequence)
+            hpprintf("New sequence started.\n");
+
+        if (!enableFreeCamera) {
+            perFramePlpOnHost.camera.aspect = static_cast<float>(renderTargetSizeX) / renderTargetSizeY;
+            activeCamera->setUpDeviceType(&perFramePlpOnHost.camera, timePoint);
+        }
+
+        perFramePlpOnHost.instances = g_scene.getInstancesOnDevice();
+
+        perFramePlpOnHost.envLight.enabled = false;
+
+        perFramePlpOnHost.mousePosition = int2(g_mouseX, g_mouseY);
+
+        perFramePlpOnHost.numAccumFrames = numAccumFrames;
+        perFramePlpOnHost.enableDebugPrint = g_keyDebugPrint.getState();
+
+
+
+        CUDADRV_CHECK(cuStreamSynchronize(curCuStream));
+        outputBufferHolder.beginCUDAAccess(curCuStream);
+
+        perFramePlpOnHost.outputBuffer = outputBufferHolder.getNext();
+        perFramePlpOnHost.travHandle = g_scene.buildASs(curCuStream, timePoint);
+        CUDADRV_CHECK(cuMemcpyHtoDAsync(
+            perFramePlpOnDevice, &perFramePlpOnHost, sizeof(perFramePlpOnHost), curCuStream));
+
+        g_gpuEnv.pathTracing.setEntryPoint(PathTracingEntryPoint::pathTrace);
+        g_gpuEnv.pathTracing.optixPipeline.launch(
+            curCuStream, plpOnDevice, renderTargetSizeX, renderTargetSizeY, 1);
+
+        g_gpuEnv.applyToneMap.launchWithThreadDim(
+            curCuStream, cudau::dim3(renderTargetSizeX, renderTargetSizeY));
+
+        outputBufferHolder.endCUDAAccess(curCuStream, true);
+
+        CUDADRV_CHECK(cuStreamSynchronize(curCuStream));
+        //glFinish();
+        //{
+        //    SDRImageSaverConfig config = {};
+        //    config.alphaForOverride = 1.0f;
+        //    config.applyToneMap = false;
+        //    config.apply_sRGB_gammaCorrection = false;
+        //    config.brightnessScale = 1.0f;
+        //    config.flipY = false;
+        //    //saveImage("output.png", accumBuffer, config);
+        //    auto rawImage = new float4[renderTargetSizeX * renderTargetSizeY];
+        //    std::fill(rawImage, rawImage + renderTargetSizeX * renderTargetSizeY, 1.0f);
+        //    glGetTextureSubImage(
+        //        gfxOutputBuffer.getHandle(), 0,
+        //        0, 0, 0, renderTargetSizeX, renderTargetSizeY, 1,
+        //        GL_RGBA, GL_FLOAT, sizeof(float4) * renderTargetSizeX * renderTargetSizeY, rawImage);
+        //    saveImage("output.png", renderTargetSizeX, renderTargetSizeY, rawImage, config);
+        //    delete[] rawImage;
+
+        //    printf("");
+        //}
+
+
+
         glEnable(GL_FRAMEBUFFER_SRGB);
         ImGui::GetStyle() = guiStyleWithGamma;
         glViewport(0, 0, curFBWidth, curFBHeight);
-        glClearColor(0.0f, 0.0f, 0.05f, 1.0f);
-        //glClearDepth(1.0f);
-        glClear(GL_COLOR_BUFFER_BIT/* | GL_DEPTH_BUFFER_BIT*/);
+        //glClearColor(0.0f, 0.0f, 0.05f, 1.0f);
+        ////glClearDepth(1.0f);
+        //glClear(GL_COLOR_BUFFER_BIT/* | GL_DEPTH_BUFFER_BIT*/);
+
+        glUseProgram(drawOptiXResultShader.getHandle());
+
+        glUniform2ui(0, curFBWidth, curFBHeight);
+        glBindTextureUnit(0, gfxOutputBuffer.getHandle());
+        glBindSampler(0, outputSampler.getHandle());
+
+        glBindVertexArray(vertexArrayForFullScreen.getHandle());
+        glDrawArrays(GL_TRIANGLES, 0, 3);
         
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -331,6 +580,11 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
         ++frameIndex;
     }
 
+    CUDADRV_CHECK(cuStreamSynchronize(cuStreams[0]));
+    CUDADRV_CHECK(cuStreamSynchronize(cuStreams[1]));
+
+    finalizeScreenRelatedBuffers();
+
 
 
     ImGui_ImplOpenGL3_Shutdown();
@@ -339,11 +593,11 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
 
     glfwTerminate();
 
-    for (int bufIdx = 0; bufIdx < 2; ++bufIdx)
-        CUDADRV_CHECK(cuStreamDestroy(cuStreams[bufIdx]));
+    //for (int bufIdx = 0; bufIdx < 2; ++bufIdx)
+    //    CUDADRV_CHECK(cuStreamDestroy(cuStreams[bufIdx]));
 
-    g_scene.finalize();
-    g_gpuEnv.finalize();
+    //g_scene.finalize();
+    //g_gpuEnv.finalize();
 
 	return 0;
 }

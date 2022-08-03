@@ -34,7 +34,9 @@ void Scene::allocateGeometryInstance(const Ref<Geometry> &geom) {
 }
 
 void Scene::allocateGeometryAccelerationStructure(const Ref<GeometryGroup> &geomGroup) {
+    m_geometryGroups.insert(geomGroup);
     optixu::GeometryAccelerationStructure optixGas = m_optixScene.createGeometryAccelerationStructure();
+    optixGas.setConfiguration(optixu::ASTradeoff::PreferFastTrace, false, false, false);
     optixGas.setNumMaterialSets(1);
     optixGas.setNumRayTypes(0, shared::maxNumRayTypes);
     geomGroup->associateScene(optixGas);
@@ -48,6 +50,64 @@ void Scene::allocateInstance(const Ref<Instance> &inst) {
     optixu::Instance optixInst = m_optixScene.createInstance();
     optixInst.setID(slot);
     inst->associateScene(slot, optixInst);
+    m_optixIas.addChild(optixInst);
+}
+
+OptixTraversableHandle Scene::buildASs(CUstream stream, float timePoint) {
+    size_t hitGroupSbtSize;
+    m_optixScene.generateShaderBindingTableLayout(&hitGroupSbtSize);
+    if (!m_hitGroupSbt.isInitialized()) {
+        m_hitGroupSbt.initialize(g_gpuEnv.cuContext, bufferType, hitGroupSbtSize, 1);
+        m_hitGroupSbt.setMappedMemoryPersistent(true);
+    }
+    else if (m_hitGroupSbt.sizeInBytes() < hitGroupSbtSize) {
+        m_hitGroupSbt.resize(hitGroupSbtSize, 1);
+    }
+    g_gpuEnv.pathTracing.optixPipeline.setScene(m_optixScene);
+    g_gpuEnv.pathTracing.optixPipeline.setHitGroupShaderBindingTable(
+        m_hitGroupSbt, m_hitGroupSbt.getMappedPointer());
+
+    shared::SurfaceMaterial* surfMats = m_surfaceMaterialBuffer.map();
+    for (const auto &it : m_surfaceMaterialSlotOwners) {
+        it.second->setUpDeviceType(&surfMats[it.first]);
+    }
+    m_surfaceMaterialBuffer.unmap();
+
+    shared::GeometryInstance* geomInsts = m_geometryInstanceBuffer.map();
+    for (const auto &it : m_geometryInstanceSlotOwners) {
+        it.second->setUpDeviceType(&geomInsts[it.first]/*, timePoint*/);
+    }
+    m_geometryInstanceBuffer.unmap();
+
+    for (const Ref<GeometryGroup> &geomGroup : m_geometryGroups) {
+        geomGroup->buildAS(stream);
+    }
+
+    shared::Instance* insts = m_instanceBuffer.map();
+    for (const auto &it : m_instanceSlotOwners) {
+        it.second->setUpDeviceType(&insts[it.first], timePoint);
+    }
+    m_instanceBuffer.unmap();
+
+    OptixAccelBufferSizes sizes;
+    m_optixIas.prepareForBuild(&sizes);
+
+    if (!m_optixAsMem.isInitialized())
+        m_optixAsMem.initialize(g_gpuEnv.cuContext, bufferType, sizes.outputSizeInBytes, 1);
+    else if (m_optixAsMem.sizeInBytes() < sizes.outputSizeInBytes)
+        m_optixAsMem.resize(sizes.outputSizeInBytes, 1);
+
+    if (!m_optixAsScratchMem.isInitialized())
+        m_optixAsScratchMem.initialize(g_gpuEnv.cuContext, bufferType, sizes.tempSizeInBytes, 1);
+    else if (m_optixAsScratchMem.sizeInBytes() < sizes.tempSizeInBytes)
+        m_optixAsScratchMem.resize(sizes.tempSizeInBytes, 1);
+
+    if (!m_optixInstanceBuffer.isInitialized())
+        m_optixInstanceBuffer.initialize(g_gpuEnv.cuContext, bufferType, m_optixIas.getNumChildren());
+    else if (m_optixInstanceBuffer.numElements() < m_optixIas.getNumChildren())
+        m_optixInstanceBuffer.resize(m_optixInstanceBuffer.numElements());
+
+    return m_optixIas.rebuild(stream, m_optixInstanceBuffer, m_optixAsMem, m_optixAsScratchMem);
 }
 
 
@@ -1199,12 +1259,6 @@ std::map<std::string, lineFunc> processors = {
                 "Instance with the same name %s exists.",
                 camName.c_str());
 
-            if (context.camInfos.empty()) {
-                ActiveCameraInfo activeCamInfo;
-                activeCamInfo.timePoint = 0.0f;
-                context.activeCamInfos.push_back(activeCamInfo);
-            }
-
             CameraInfo camInfo;
             camInfo.nextKeyPosition = Point3D(0, 1, 5);
             camInfo.nextKeyLookAt = Point3D(0, 0, 0);
@@ -1300,7 +1354,8 @@ std::map<std::string, lineFunc> processors = {
         "lookat",
         [](SceneLoadingContext &context) {
             static const char* cmd = "lookat";
-            static const std::regex re = makeRegex({cmd, reString, reReal, reReal, reReal});
+            static const std::regex re =
+                makeRegex({cmd, reString, reReal, reReal, reReal, reReal, reReal, reReal });
             std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
 
             std::string camName = m[1].str();
@@ -1313,6 +1368,10 @@ std::map<std::string, lineFunc> processors = {
                 std::stof(m[2].str().c_str()),
                 std::stof(m[3].str().c_str()),
                 std::stof(m[4].str().c_str()));
+            context.camInfos.at(camName).nextKeyUp = Vector3D(
+                std::stof(m[5].str().c_str()),
+                std::stof(m[6].str().c_str()),
+                std::stof(m[7].str().c_str()));
         }
     },
     {
@@ -1349,7 +1408,7 @@ std::map<std::string, lineFunc> processors = {
                 KeyCameraState state;
                 state.timePoint = timePoint;
                 state.position = camInfo.nextKeyPosition;
-                state.lookAt = camInfo.nextKeyLookAt;
+                state.positionLookAt = camInfo.nextKeyLookAt;
                 state.up = camInfo.nextKeyUp;
                 state.fovY = camInfo.nextKeyFovY;
                 camInfo.keyStates.push_back(state);
@@ -1405,6 +1464,14 @@ void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* render
             firstToken.c_str());
         context.line = line;
         processors.at(firstToken)(context);
+    }
+
+
+    if (context.activeCamInfos.empty()) {
+        ActiveCameraInfo activeCamInfo;
+        activeCamInfo.name = context.camInfos.begin()->first;
+        activeCamInfo.timePoint = 0.0f;
+        context.activeCamInfos.push_back(activeCamInfo);
     }
 
     renderConfigs->imageWidth = context.imageWidth;

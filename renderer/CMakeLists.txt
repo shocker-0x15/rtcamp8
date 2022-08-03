@@ -6,7 +6,7 @@ file(
 
 set(
     CUDA_KERNELS
-    "gpu_kernels/copy_buffers.cu"
+    "gpu_kernels/post_process_kernels.cu"
 )
 
 set(
@@ -20,6 +20,7 @@ set(
     "../common/utils/optix_util.h"
     "../common/utils/optixu_on_cudau.h"
     "../common/common_shared.h"
+    "../common/common_renderer_types.h"
     "../common/basic_types.h"
     "${TARGET_NAME}_shared.h"
 )

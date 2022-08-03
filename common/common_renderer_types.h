@@ -444,11 +444,11 @@ public:
 
 
 struct TexDimInfo {
-    unsigned int dimX : 14;
-    unsigned int dimY : 14;
-    unsigned int isNonPowerOfTwo : 1;
-    unsigned int isBCTexture : 1;
-    unsigned int isLeftHanded : 1; // for normal map
+    uint32_t dimX : 14;
+    uint32_t dimY : 14;
+    uint32_t isNonPowerOfTwo : 1;
+    uint32_t isBCTexture : 1;
+    uint32_t isLeftHanded : 1; // for normal map
 };
 
 
@@ -752,6 +752,25 @@ struct EnvironmentalLight {
         return envLightSample(body, uDir0, uDir1, phi, theta, dirPDensity);
     }
 #endif
+};
+
+
+
+struct PerspectiveCamera {
+    float aspect;
+    float fovY;
+    Point3D position;
+    Quaternion orientation;
+
+    CUDA_COMMON_FUNCTION float2 calcScreenPosition(const Point3D &posInWorld) const {
+        Matrix3x3 invOri = conjugate(orientation).toMatrix3x3();
+        Vector3D posInView = invOri * (posInWorld - position);
+        float2 posAtZ1 = make_float2(posInView.x / posInView.z, posInView.y / posInView.z);
+        float h = 2 * std::tan(fovY / 2);
+        float w = aspect * h;
+        return make_float2(1 - (posAtZ1.x + 0.5f * w) / w,
+                           1 - (posAtZ1.y + 0.5f * h) / h);
+    }
 };
 
 

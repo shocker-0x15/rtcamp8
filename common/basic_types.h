@@ -2,6 +2,11 @@
 
 #include "common_shared.h"
 
+#define vec2print(v) v.x, v.y
+#define vec3print(v) v.x, v.y, v.z
+#define vec4print(v) v.x, v.y, v.z, v.w
+#define rgbprint(v) v.r, v.g, v.b
+
 #if !defined(__CUDA_ARCH__) && !defined(__CUDACC__)
 // ----------------------------------------------------------------
 // JP: CUDAビルトインに対応する型・関数をホスト側で定義しておく。
@@ -1240,6 +1245,12 @@ struct QuaternionTemplate {
         w -= q.w;
         return *this;
     }
+    CUDA_COMMON_FUNCTION constexpr QuaternionTemplate &operator*=(const QuaternionTemplate &q) {
+        Vector3D vv = v;
+        v = cross(vv, q.v) + w * q.v + q.w * vv;
+        w = w * q.w - dot(vv, q.v);
+        return *this;
+    }
     CUDA_COMMON_FUNCTION constexpr QuaternionTemplate &operator*=(RealType s) {
         v *= s;
         w *= s;
@@ -1284,6 +1295,16 @@ struct QuaternionTemplate {
             Vector3D(1 - 2 * (yy + zz), 2 * (xy + zw), 2 * (zx - yw)),
             Vector3D(2 * (xy - zw), 1 - 2 * (xx + zz), 2 * (yz + xw)),
             Vector3D(2 * (zx + yw), 2 * (yz - xw), 1 - 2 * (xx + yy)));
+    }
+    CUDA_COMMON_FUNCTION constexpr Matrix4x4Template<RealType> toMatrix4x4() const {
+        RealType xx = x * x, yy = y * y, zz = z * z;
+        RealType xy = x * y, yz = y * z, zx = z * x;
+        RealType xw = x * w, yw = y * w, zw = z * w;
+        return Matrix4x4Template<RealType>(
+            Vector4DTemplate<RealType>(1 - 2 * (yy + zz), 2 * (xy + zw), 2 * (zx - yw), 0.0f),
+            Vector4DTemplate<RealType>(2 * (xy - zw), 1 - 2 * (xx + zz), 2 * (yz + xw), 0.0f),
+            Vector4DTemplate<RealType>(2 * (zx + yw), 2 * (yz - xw), 1 - 2 * (xx + yy), 0.0f),
+            Vector4DTemplate<RealType>::Ew());
     }
 
     CUDA_COMMON_FUNCTION CUDA_INLINE static constexpr QuaternionTemplate Identity() {
@@ -2055,6 +2076,11 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Matrix4x4Template<RealType> translate
     const Vector3DTemplate<RealType> &t) {
     return translate4x4(t.x, t.y, t.z);
 }
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Matrix4x4Template<RealType> translate4x4(
+    const Point3DTemplate<RealType> &t) {
+    return translate4x4(t.x, t.y, t.z);
+}
 
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ Matrix4x4Template<RealType> rotate4x4(
@@ -2265,6 +2291,57 @@ template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType> qRotateZ(
     RealType angle) {
     return qRotate(angle, Vector3DTemplate<RealType>::Ez);
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType> qLookAt(
+    const Vector3DTemplate<RealType> &dir, const Vector3DTemplate<RealType> &up) {
+    using Quaternion = QuaternionTemplate<RealType>;
+    using Vector3D = Vector3DTemplate<RealType>;
+    constexpr Vector3D defaultUpDir = Vector3D::Ey();
+    constexpr Vector3D defaultDir = -Vector3D::Ez();
+    Vector3D nDir = normalize(dir);
+    Vector3D nUp = up;
+    {
+        RealType d = dot(nDir, nUp);
+        nUp -= d * nDir;
+        nUp.normalize();
+    }
+
+    // First, obtain a quaternion to rotate the default direction to match the given direction;
+    RealType dotDToD = dot(defaultDir, nDir);
+    RealType angleDToD = std::acos(
+        clamp(dotDToD, static_cast<RealType>(-1), static_cast<RealType>(1)));
+    Vector3D axisDToD;
+    if (std::fabs(dotDToD) < 0.9999f) {
+        axisDToD = normalize(cross(defaultDir, nDir));
+    }
+    else {
+        Vector3D b;
+        defaultDir.makeCoordinateSystem(&axisDToD, &b);
+    }
+    RealType sDToD, cDToD;
+    sincos(angleDToD / 2, &sDToD, &cDToD);
+    Quaternion qDToD(sDToD * axisDToD, cDToD);
+
+    // The above quaternion transforms the default up direction to some direction as well.
+    Vector3D intermUpDir = qDToD.toMatrix3x3() * defaultUpDir;
+
+    // Second, obtain a quaternion to rotate the intermediate up direction
+    // to match the given up direction.
+    RealType dotUToU = dot(intermUpDir, nUp);
+    RealType angleUToU = std::acos(
+        clamp(dotUToU, static_cast<RealType>(-1), static_cast<RealType>(1)));
+    Vector3D axisUToU = normalize(cross(intermUpDir, nUp)); // The same or the opposite of the given direction.
+    if (!axisUToU.allFinite())
+        axisUToU = nDir;
+    RealType sUToU, cUToU;
+    sincos(angleUToU / 2, &sUToU, &cUToU);
+    Quaternion qUToU(sUToU * axisUToU, cUToU);
+
+    Quaternion ret = conjugate(qUToU * qDToD);
+
+    return ret;
 }
 
 template <typename RealType>

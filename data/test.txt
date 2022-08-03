@@ -23,5 +23,5 @@ addkey rectlight_inst 0.0 false false
 camera cam
 fovy cam 60
 trans cam 0.0 0.0 3.5
-lookat cam 0.0 0.0 0.0
+lookat cam 0.0 0.0 0.0 0.0 1.0 0.0
 addkey cam 0.0 false false
