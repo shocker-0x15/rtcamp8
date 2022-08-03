@@ -1151,24 +1151,30 @@ struct Matrix4x4Template {
 
         // JP: 移動成分
         // EN: Translation component
-        *translation = static_cast<Vector3D>(mat.c3);
+        if (translation)
+            *translation = static_cast<Vector3D>(mat.c3);
 
         // JP: 拡大縮小成分
         // EN: Scale component
-        *scale = Vector3D(
+        Vector3D s(
             static_cast<Vector3D>(mat.c0).length(),
             static_cast<Vector3D>(mat.c1).length(),
             static_cast<Vector3D>(mat.c2).length());
+        if (scale)
+            *scale = s;
+
+        if (!rotation)
+            return;
 
         // JP: 上記成分を排除
         // EN: Remove the above components
         mat.c3 = Vector4DTemplate<RealType>(0, 0, 0, 1);
-        if (std::fabs(scale->x) > 0)
-            mat.c0 /= scale->x;
-        if (std::fabs(scale->y) > 0)
-            mat.c1 /= scale->y;
-        if (std::fabs(scale->z) > 0)
-            mat.c2 /= scale->z;
+        if (std::fabs(s.x) > 0)
+            mat.c0 /= s.x;
+        if (std::fabs(s.y) > 0)
+            mat.c1 /= s.y;
+        if (std::fabs(s.z) > 0)
+            mat.c2 /= s.z;
 
         // JP: 回転成分がXYZの順で作られている、つまりZYXp(pは何らかのベクトル)と仮定すると、行列は以下の形式をとっていると考えられる。
         //     A, B, GはそれぞれX, Y, Z軸に対する回転角度。cとsはcosとsin。

@@ -388,6 +388,7 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
         staticPlpOnHost.bsdfProcedureSets = g_gpuEnv.bsdfProcedureSetBuffer.getDevicePointer();
         staticPlpOnHost.surfaceMaterials = g_scene.getSurfaceMaterialsOnDevice();
         staticPlpOnHost.geometryInstances = g_scene.getGeometryInstancesOnDevice();
+        staticPlpOnHost.geometryGroups = g_scene.getGeometryGroupsOnDevice();
 
         staticPlpOnHost.imageSize = int2(renderTargetSizeX, renderTargetSizeY);
         staticPlpOnHost.rngBuffer = rngBuffer.getSurfaceObject(0);
@@ -430,6 +431,10 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
         const ActiveCameraInfo &activeCamInfo = renderConfigs.activeCameraInfos[0];
         activeCamera = renderConfigs.cameras.at(activeCamInfo.name);
     }
+
+    g_scene.setUpDeviceDataBuffers(timePoint);
+    g_scene.setUpLightGeomDistributions(cuStreams[0]);
+    //g_scene.checkLightGeomDistributions();
 
     while (true) {
         uint32_t curBufIdx = frameIndex % 2;
@@ -499,7 +504,7 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
 
         if (!enableFreeCamera) {
             perFramePlpOnHost.camera.aspect = static_cast<float>(renderTargetSizeX) / renderTargetSizeY;
-            activeCamera->setUpDeviceType(&perFramePlpOnHost.camera, timePoint);
+            activeCamera->setUpDeviceData(&perFramePlpOnHost.camera, timePoint);
         }
 
         perFramePlpOnHost.instances = g_scene.getInstancesOnDevice();
@@ -517,9 +522,25 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
         outputBufferHolder.beginCUDAAccess(curCuStream);
 
         perFramePlpOnHost.outputBuffer = outputBufferHolder.getNext();
-        perFramePlpOnHost.travHandle = g_scene.buildASs(curCuStream, timePoint);
+        perFramePlpOnHost.travHandle = g_scene.buildASs(curCuStream);
         CUDADRV_CHECK(cuMemcpyHtoDAsync(
             perFramePlpOnDevice, &perFramePlpOnHost, sizeof(perFramePlpOnHost), curCuStream));
+        g_scene.setUpDeviceDataBuffers(timePoint);
+        g_scene.setUpLightInstDistribution(
+            curCuStream,
+            perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, lightInstDist));
+        //g_scene.checkLightInstDistribution(
+        //    perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, lightInstDist));
+
+        //{
+        //    CUDADRV_CHECK(cuStreamSynchronize(curCuStream));
+        //    shared::StaticPipelineLaunchParameters s;
+        //    shared::PerFramePipelineLaunchParameters f;
+        //    CUDADRV_CHECK(cuMemcpyDtoH(&s, staticPlpOnDevice, sizeof(s)));
+        //    CUDADRV_CHECK(cuMemcpyDtoH(&f, perFramePlpOnDevice, sizeof(f)));
+        //    printf("%g\n", f.lightInstDist.integral());
+        //    printf("");
+        //}
 
         g_gpuEnv.pathTracing.setEntryPoint(PathTracingEntryPoint::pathTrace);
         g_gpuEnv.pathTracing.optixPipeline.launch(

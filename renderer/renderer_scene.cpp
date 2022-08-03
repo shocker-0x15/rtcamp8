@@ -34,12 +34,15 @@ void Scene::allocateGeometryInstance(const Ref<Geometry> &geom) {
 }
 
 void Scene::allocateGeometryAccelerationStructure(const Ref<GeometryGroup> &geomGroup) {
-    m_geometryGroups.insert(geomGroup);
+    uint32_t slot = m_geometryGroupSlotFinder.getFirstAvailableSlot();
+    Assert(slot != 0xFFFFFFFF, "failed to allocate a GeometryGroup.");
+    m_geometryGroupSlotFinder.setInUse(slot);
+    m_geometryGroupSlotOwners[slot] = geomGroup;
     optixu::GeometryAccelerationStructure optixGas = m_optixScene.createGeometryAccelerationStructure();
     optixGas.setConfiguration(optixu::ASTradeoff::PreferFastTrace, false, false, false);
     optixGas.setNumMaterialSets(1);
     optixGas.setNumRayTypes(0, shared::maxNumRayTypes);
-    geomGroup->associateScene(optixGas);
+    geomGroup->associateScene(slot, optixGas);
 }
 
 void Scene::allocateInstance(const Ref<Instance> &inst) {
@@ -53,7 +56,7 @@ void Scene::allocateInstance(const Ref<Instance> &inst) {
     m_optixIas.addChild(optixInst);
 }
 
-OptixTraversableHandle Scene::buildASs(CUstream stream, float timePoint) {
+void Scene::setUpDeviceDataBuffers(float timePoint) {
     size_t hitGroupSbtSize;
     m_optixScene.generateShaderBindingTableLayout(&hitGroupSbtSize);
     if (!m_hitGroupSbt.isInitialized()) {
@@ -69,25 +72,33 @@ OptixTraversableHandle Scene::buildASs(CUstream stream, float timePoint) {
 
     shared::SurfaceMaterial* surfMats = m_surfaceMaterialBuffer.map();
     for (const auto &it : m_surfaceMaterialSlotOwners) {
-        it.second->setUpDeviceType(&surfMats[it.first]);
+        it.second->setUpDeviceData(&surfMats[it.first]);
     }
     m_surfaceMaterialBuffer.unmap();
 
     shared::GeometryInstance* geomInsts = m_geometryInstanceBuffer.map();
     for (const auto &it : m_geometryInstanceSlotOwners) {
-        it.second->setUpDeviceType(&geomInsts[it.first]/*, timePoint*/);
+        it.second->setUpDeviceData(&geomInsts[it.first]/*, timePoint*/);
     }
     m_geometryInstanceBuffer.unmap();
 
-    for (const Ref<GeometryGroup> &geomGroup : m_geometryGroups) {
-        geomGroup->buildAS(stream);
+    shared::GeometryGroup* geomGroups = m_geometryGroupBuffer.map();
+    for (const auto &it : m_geometryGroupSlotOwners) {
+        it.second->setUpDeviceData(&geomGroups[it.first]/*, timePoint*/);
     }
+    m_geometryGroupBuffer.unmap();
 
     shared::Instance* insts = m_instanceBuffer.map();
     for (const auto &it : m_instanceSlotOwners) {
-        it.second->setUpDeviceType(&insts[it.first], timePoint);
+        it.second->setUpDeviceData(&insts[it.first], timePoint);
     }
     m_instanceBuffer.unmap();
+}
+
+OptixTraversableHandle Scene::buildASs(CUstream stream) {
+    for (const auto &it : m_geometryGroupSlotOwners) {
+        it.second->buildAS(stream);
+    }
 
     OptixAccelBufferSizes sizes;
     m_optixIas.prepareForBuild(&sizes);
@@ -108,6 +119,137 @@ OptixTraversableHandle Scene::buildASs(CUstream stream, float timePoint) {
         m_optixInstanceBuffer.resize(m_optixInstanceBuffer.numElements());
 
     return m_optixIas.rebuild(stream, m_optixInstanceBuffer, m_optixAsMem, m_optixAsScratchMem);
+}
+
+void Scene::setUpLightGeomDistributions(CUstream stream) {
+    const shared::SurfaceMaterial* surfMatBuffer = m_surfaceMaterialBuffer.getDevicePointer();
+    for (const auto &it : m_geometryInstanceSlotOwners) {
+        const Ref<Geometry> geomInst = it.second;
+        geomInst->setUpLightDistribution(
+            stream,
+            m_geometryInstanceBuffer.getDevicePointerAt(it.first),
+            surfMatBuffer);
+    }
+    for (const auto &it : m_geometryInstanceSlotOwners) {
+        const Ref<Geometry> geomInst = it.second;
+        geomInst->scanLightDistribution(
+            stream,
+            m_geometryInstanceBuffer.getDevicePointerAt(it.first));
+    }
+    for (const auto &it : m_geometryInstanceSlotOwners) {
+        const Ref<Geometry> geomInst = it.second;
+        geomInst->finalizeLightDistribution(
+            stream,
+            m_geometryInstanceBuffer.getDevicePointerAt(it.first));
+    }
+
+    const shared::GeometryInstance* geomInstBuffer = m_geometryInstanceBuffer.getDevicePointer();
+    for (const auto &it : m_geometryGroupSlotOwners) {
+        const Ref<GeometryGroup> geomGroup = it.second;
+        geomGroup->setUpLightDistribution(
+            stream,
+            m_geometryGroupBuffer.getDevicePointerAt(it.first),
+            geomInstBuffer);
+    }
+    for (const auto &it : m_geometryGroupSlotOwners) {
+        const Ref<GeometryGroup> geomGroup = it.second;
+        geomGroup->scanLightDistribution(
+            stream,
+            m_geometryGroupBuffer.getDevicePointerAt(it.first));
+    }
+    for (const auto &it : m_geometryGroupSlotOwners) {
+        const Ref<GeometryGroup> geomGroup = it.second;
+        geomGroup->finalizeLightDistribution(
+            stream,
+            m_geometryGroupBuffer.getDevicePointerAt(it.first));
+    }
+}
+
+void Scene::checkLightGeomDistributions() {
+    CUDADRV_CHECK(cuStreamSynchronize(0));
+
+    const shared::GeometryInstance* geomInsts = m_geometryInstanceBuffer.map();
+    for (const auto &it : m_geometryInstanceSlotOwners) {
+        const shared::GeometryInstance &geomInst = geomInsts[it.first];
+        shared::LightDistribution emitterPrimDist = geomInst.emitterPrimDist;
+        uint32_t numValues = emitterPrimDist.numValues();
+        if (numValues == 0)
+            continue;
+        std::vector<float> weights(numValues);
+        std::vector<float> cdfs(numValues);
+        CUDADRV_CHECK(cuMemcpyDtoH(
+            weights.data(), reinterpret_cast<CUdeviceptr>(emitterPrimDist.weights()),
+            numValues * sizeof(float)));
+        CUDADRV_CHECK(cuMemcpyDtoH(
+            cdfs.data(), reinterpret_cast<CUdeviceptr>(emitterPrimDist.cdfs()),
+            numValues * sizeof(float)));
+        printf("");
+    }
+    m_geometryInstanceBuffer.unmap();
+
+    const shared::GeometryGroup* geomGroups = m_geometryGroupBuffer.map();
+    for (const auto &it : m_geometryGroupSlotOwners) {
+        const shared::GeometryGroup &geomGroup = geomGroups[it.first];
+        shared::LightDistribution lightGeomInstDist = geomGroup.lightGeomInstDist;
+        uint32_t numValues = lightGeomInstDist.numValues();
+        if (numValues == 0)
+            continue;
+        std::vector<float> weights(numValues);
+        std::vector<float> cdfs(numValues);
+        CUDADRV_CHECK(cuMemcpyDtoH(
+            weights.data(), reinterpret_cast<CUdeviceptr>(lightGeomInstDist.weights()),
+            numValues * sizeof(float)));
+        CUDADRV_CHECK(cuMemcpyDtoH(
+            cdfs.data(), reinterpret_cast<CUdeviceptr>(lightGeomInstDist.cdfs()),
+            numValues * sizeof(float)));
+        printf("");
+    }
+    m_geometryGroupBuffer.unmap();
+}
+
+void Scene::setUpLightInstDistribution(CUstream stream, CUdeviceptr lightInstDistAddr) {
+    shared::LightDistribution dLightInstDist;
+    lightInstDist.getDeviceType(&dLightInstDist);
+    CUDADRV_CHECK(cuMemcpyHtoDAsync(
+        lightInstDistAddr, &dLightInstDist, sizeof(dLightInstDist), stream));
+
+    uint32_t numInsts = m_instanceSlotOwners.size();
+    g_gpuEnv.computeLightProbs.computeInstProbBuffer.launchWithThreadDim(
+        stream, cudau::dim3(numInsts),
+        lightInstDistAddr, numInsts,
+        m_geometryGroupBuffer.getDevicePointer(), m_instanceBuffer.getDevicePointer());
+
+    size_t scratchMemSize = m_scanScratchMem.sizeInBytes();
+    CUDADRV_CHECK(cubd::DeviceScan::ExclusiveSum(
+        m_scanScratchMem.getDevicePointer(), scratchMemSize,
+        lightInstDist.weightsOnDevice(),
+        lightInstDist.cdfOnDevice(),
+        numInsts, stream));
+
+    g_gpuEnv.computeLightProbs.finalizeDiscreteDistribution1D.launchWithThreadDim(
+        stream, cudau::dim3(1),
+        lightInstDistAddr);
+}
+
+void Scene::checkLightInstDistribution(CUdeviceptr lightInstDistAddr) {
+    CUDADRV_CHECK(cuStreamSynchronize(0));
+
+    shared::LightDistribution lightInstDist;
+    CUDADRV_CHECK(cuMemcpyDtoH(
+        &lightInstDist, lightInstDistAddr, sizeof(lightInstDist)));
+
+    uint32_t numValues = m_instanceSlotOwners.size();
+    if (numValues == 0)
+        return;
+    std::vector<float> weights(numValues);
+    std::vector<float> cdfs(numValues);
+    CUDADRV_CHECK(cuMemcpyDtoH(
+        weights.data(), reinterpret_cast<CUdeviceptr>(lightInstDist.weights()),
+        numValues * sizeof(float)));
+    CUDADRV_CHECK(cuMemcpyDtoH(
+        cdfs.data(), reinterpret_cast<CUdeviceptr>(lightInstDist.cdfs()),
+        numValues * sizeof(float)));
+    printf("");
 }
 
 

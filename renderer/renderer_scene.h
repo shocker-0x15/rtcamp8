@@ -2,6 +2,7 @@
 
 #include "renderer_shared.h"
 #include "../common/common_host.h"
+#include "../ext/cubd/cubd.h"
 
 namespace rtc8 {
 
@@ -26,6 +27,14 @@ struct GPUEnvironment {
     CUmodule postProcessKernelsModule;
     CUdeviceptr plpForPostProcessKernelsModule;
     cudau::Kernel applyToneMap;
+
+    struct ComputeLightProbs {
+        CUmodule cudaModule;
+        cudau::Kernel computeTriangleProbBuffer;
+        cudau::Kernel computeGeomInstProbBuffer;
+        cudau::Kernel computeInstProbBuffer;
+        cudau::Kernel finalizeDiscreteDistribution1D;
+    } computeLightProbs;
 
     cudau::TypedBuffer<shared::BSDFProcedureSet> bsdfProcedureSetBuffer;
     std::vector<shared::BSDFProcedureSet> mappedBsdfProcedureSets;
@@ -67,6 +76,18 @@ struct GPUEnvironment {
         applyToneMap.set(postProcessKernelsModule, "applyToneMap", cudau::dim3(8, 8), 0);
         CUDADRV_CHECK(cuModuleGetGlobal(
             &plpForPostProcessKernelsModule, &symbolSize, postProcessKernelsModule, "plp"));
+
+        CUDADRV_CHECK(cuModuleLoad(
+            &computeLightProbs.cudaModule,
+            (exeDir / "renderer/ptxes/compute_light_probs.ptx").string().c_str()));
+        computeLightProbs.computeTriangleProbBuffer.set(
+            computeLightProbs.cudaModule, "computeTriangleProbBuffer", cudau::dim3(32), 0);
+        computeLightProbs.computeGeomInstProbBuffer.set(
+            computeLightProbs.cudaModule, "computeGeomInstProbBuffer", cudau::dim3(32), 0);
+        computeLightProbs.computeInstProbBuffer.set(
+            computeLightProbs.cudaModule, "computeInstProbBuffer", cudau::dim3(32), 0);
+        computeLightProbs.finalizeDiscreteDistribution1D.set(
+            computeLightProbs.cudaModule, "finalizeDiscreteDistribution1D", cudau::dim3(32), 0);
 
 
 
@@ -170,21 +191,25 @@ class Instance;
 
 
 class Scene {
+    static constexpr uint32_t maxNumPrimitivesPerGeometry = 1 << 16;
     static constexpr uint32_t maxNumMaterials = 1 << 10;
     static constexpr uint32_t maxNumGeometryInstances = 1 << 16;
+    static constexpr uint32_t maxNumGeometryGroups = 1 << 12;
     static constexpr uint32_t maxNumInstances = 1 << 16;
 
     optixu::Scene m_optixScene;
 
     SlotFinder m_surfaceMaterialSlotFinder;
     SlotFinder m_geometryInstanceSlotFinder;
+    SlotFinder m_geometryGroupSlotFinder;
     SlotFinder m_instanceSlotFinder;
     cudau::TypedBuffer<shared::SurfaceMaterial> m_surfaceMaterialBuffer;
     cudau::TypedBuffer<shared::GeometryInstance> m_geometryInstanceBuffer;
+    cudau::TypedBuffer<shared::GeometryGroup> m_geometryGroupBuffer;
     cudau::TypedBuffer<shared::Instance> m_instanceBuffer;
     std::unordered_map<uint32_t, Ref<SurfaceMaterial>> m_surfaceMaterialSlotOwners;
     std::unordered_map<uint32_t, Ref<Geometry>> m_geometryInstanceSlotOwners;
-    std::unordered_set<Ref<GeometryGroup>> m_geometryGroups;
+    std::unordered_map<uint32_t, Ref<GeometryGroup>> m_geometryGroupSlotOwners;
     std::unordered_map<uint32_t, Ref<Instance>> m_instanceSlotOwners;
 
     optixu::InstanceAccelerationStructure m_optixIas;
@@ -194,6 +219,9 @@ class Scene {
 
     cudau::Buffer m_hitGroupSbt;
 
+    LightDistribution lightInstDist;
+    cudau::Buffer m_scanScratchMem;
+
 public:
     void initialize() {
         m_optixScene = g_gpuEnv.optixContext.createScene();
@@ -202,11 +230,26 @@ public:
         m_surfaceMaterialBuffer.initialize(g_gpuEnv.cuContext, bufferType, maxNumMaterials);
         m_geometryInstanceSlotFinder.initialize(maxNumGeometryInstances);
         m_geometryInstanceBuffer.initialize(g_gpuEnv.cuContext, bufferType, maxNumGeometryInstances);
+        m_geometryGroupSlotFinder.initialize(maxNumGeometryGroups);
+        m_geometryGroupBuffer.initialize(g_gpuEnv.cuContext, bufferType, maxNumGeometryGroups);
         m_instanceSlotFinder.initialize(maxNumInstances);
         m_instanceBuffer.initialize(g_gpuEnv.cuContext, bufferType, maxNumInstances);
 
         m_optixIas = m_optixScene.createInstanceAccelerationStructure();
         m_optixIas.setConfiguration(optixu::ASTradeoff::PreferFastTrace, false, false, false);
+
+        lightInstDist.initialize(g_gpuEnv.cuContext, bufferType, nullptr, maxNumInstances);
+
+        size_t scanScratchSize;
+        constexpr int32_t maxScanSize = std::max<int32_t>({
+            maxNumPrimitivesPerGeometry,
+            maxNumMaterials,
+            maxNumGeometryInstances,
+            maxNumInstances });
+        CUDADRV_CHECK(cubd::DeviceScan::ExclusiveSum(
+            nullptr, scanScratchSize,
+            static_cast<float*>(nullptr), static_cast<float*>(nullptr), maxScanSize));
+        m_scanScratchMem.initialize(g_gpuEnv.cuContext, bufferType, scanScratchSize, 1u);
     }
 
     void finalize() {
@@ -233,13 +276,29 @@ public:
         return m_geometryInstanceBuffer.getDevicePointer();
     }
 
+    shared::GeometryGroup* getGeometryGroupsOnDevice() const {
+        return m_geometryGroupBuffer.getDevicePointer();
+    }
+
     shared::Instance* getInstancesOnDevice() const {
         return m_instanceBuffer.getDevicePointer();
     }
 
 
 
-    OptixTraversableHandle buildASs(CUstream stream, float timePoint);
+    void setUpDeviceDataBuffers(float timePoint);
+    OptixTraversableHandle buildASs(CUstream stream);
+
+
+
+    const cudau::Buffer &getScanScratchMemory() const {
+        return m_scanScratchMem;
+    }
+    
+    void setUpLightGeomDistributions(CUstream stream);
+    void checkLightGeomDistributions();
+    void setUpLightInstDistribution(CUstream stream, CUdeviceptr lightInstDistAddr);
+    void checkLightInstDistribution(CUdeviceptr lightInstDistAddr);
 };
 
 extern Scene g_scene;
@@ -324,7 +383,7 @@ public:
         return m_slot;
     }
 
-    virtual void setUpDeviceType(shared::SurfaceMaterial* deviceData)  {
+    virtual void setUpDeviceData(shared::SurfaceMaterial* deviceData)  {
         if (m_emittance)
             deviceData->emittance = m_emittance->getDeviceTexture();
     }
@@ -361,11 +420,11 @@ public:
         m_dirty = true;
     }
 
-    void setUpDeviceType(shared::SurfaceMaterial* deviceData) override {
+    void setUpDeviceData(shared::SurfaceMaterial* deviceData) override {
         if (!m_dirty)
             return;
 
-        SurfaceMaterial::setUpDeviceType(deviceData);
+        SurfaceMaterial::setUpDeviceData(deviceData);
         auto &body = *reinterpret_cast<shared::SimplePBRSurfaceMaterial*>(deviceData->body);
         body.baseColor_opacity = m_baseColor_opacity->getDeviceTexture();
         body.baseColor_opacity_dimInfo = m_occlusion_roughness_metallic->getDimInfo();
@@ -426,7 +485,18 @@ public:
         return m_slot;
     }
 
-    virtual void setUpDeviceType(shared::GeometryInstance* deviceData) {}
+    virtual void setUpDeviceData(shared::GeometryInstance* deviceData) {}
+
+    virtual void setUpLightDistribution(
+        CUstream stream,
+        const shared::GeometryInstance* deviceData,
+        const shared::SurfaceMaterial* surfMatBuffer) const = 0;
+    virtual void scanLightDistribution(
+        CUstream stream,
+        const shared::GeometryInstance* deviceData) const = 0;
+    virtual void finalizeLightDistribution(
+        CUstream stream,
+        const shared::GeometryInstance* deviceData) const = 0;
 };
 
 
@@ -434,6 +504,7 @@ public:
 class TriangleMeshGeometry : public Geometry {
     Ref<VertexBuffer> m_vertices;
     cudau::TypedBuffer<shared::Triangle> m_triangles;
+    LightDistribution m_emitterPrimDist;
     Ref<Texture2D> m_normalMap;
     Ref<SurfaceMaterial> m_surfMat;
     BumpMapTextureType m_bumpMapType;
@@ -451,6 +522,8 @@ public:
         const Ref<SurfaceMaterial> &surfMat) {
         m_vertices = vertices;
         m_triangles.initialize(g_gpuEnv.cuContext, bufferType, triangles);
+        if (surfMat->isEmissive())
+            m_emitterPrimDist.initialize(g_gpuEnv.cuContext, bufferType, nullptr, m_triangles.numElements());
         m_normalMap = normalMap;
         m_bumpMapType = bumpMapType;
         m_surfMat = surfMat;
@@ -474,13 +547,15 @@ public:
         m_dirty = true;
     }
 
-    void setUpDeviceType(shared::GeometryInstance* deviceData) override {
+    void setUpDeviceData(shared::GeometryInstance* deviceData) override {
         if (!m_dirty)
             return;
 
-        Geometry::setUpDeviceType(deviceData);
+        Geometry::setUpDeviceData(deviceData);
         deviceData->vertices = m_vertices->onDevice.getDevicePointer();
         deviceData->triangles = m_triangles.getDevicePointer();
+        if (m_emitterPrimDist.isInitialized())
+            m_emitterPrimDist.getDeviceType(&deviceData->emitterPrimDist);
         deviceData->normal = m_normalMap->getDeviceTexture();
         deviceData->normalDimInfo = m_normalMap->getDimInfo();
         if (m_bumpMapType == BumpMapTextureType::NormalMap ||
@@ -491,7 +566,44 @@ public:
         else
             deviceData->readModifiedNormal = CallableProgram_readModifiedNormalFromHeightMap;
         deviceData->surfMatSlot = m_surfMat->getSlot();
+
         m_dirty = false;
+    }
+
+    void setUpLightDistribution(
+        CUstream stream,
+        const shared::GeometryInstance* deviceData,
+        const shared::SurfaceMaterial* surfMatBuffer) const override {
+        if (!m_emitterPrimDist.isInitialized())
+            return;
+        uint32_t numTriangles = m_triangles.numElements();
+        g_gpuEnv.computeLightProbs.computeTriangleProbBuffer.launchWithThreadDim(
+            stream, cudau::dim3(numTriangles),
+            deviceData, numTriangles,
+            surfMatBuffer);
+    }
+    void scanLightDistribution(
+        CUstream stream,
+        const shared::GeometryInstance* deviceData) const override {
+        if (!m_emitterPrimDist.isInitialized())
+            return;
+        uint32_t numTriangles = m_triangles.numElements();
+        const cudau::Buffer &scanScratchMem = g_scene.getScanScratchMemory();
+        size_t scratchMemSize = scanScratchMem.sizeInBytes();
+        CUDADRV_CHECK(cubd::DeviceScan::ExclusiveSum(
+            scanScratchMem.getDevicePointer(), scratchMemSize,
+            m_emitterPrimDist.weightsOnDevice(),
+            m_emitterPrimDist.cdfOnDevice(),
+            numTriangles, stream));
+    }
+    void finalizeLightDistribution(
+        CUstream stream,
+        const shared::GeometryInstance* deviceData) const override {
+        if (!m_emitterPrimDist.isInitialized())
+            return;
+        g_gpuEnv.computeLightProbs.finalizeDiscreteDistribution1D.launchWithThreadDim(
+            stream, cudau::dim3(1),
+            &deviceData->emitterPrimDist);
     }
 };
 
@@ -499,6 +611,7 @@ public:
 
 class GeometryGroup {
     optixu::GeometryAccelerationStructure m_optixGas;
+    uint32_t m_slot;
     std::set<Ref<Geometry>> m_geometries;
     BoundingBox3D m_aabb;
 
@@ -507,13 +620,17 @@ class GeometryGroup {
     cudau::TypedBuffer<uint32_t> m_geomInstSlotBuffer;
     LightDistribution m_lightGeomInstDist;
     uint32_t m_dirty : 1;
+    uint32_t m_gasIsDirty : 1;
 
 public:
-    GeometryGroup() : m_dirty(false) {}
+    GeometryGroup() :
+        m_slot(0xFFFFFFFF), m_dirty(false), m_gasIsDirty(false) {}
 
-    void associateScene(optixu::GeometryAccelerationStructure optixGas) {
+    void associateScene(uint32_t slot, optixu::GeometryAccelerationStructure optixGas) {
+        m_slot = slot;
         m_optixGas = optixGas;
         m_dirty = true;
+        m_gasIsDirty = true;
     }
 
     void set(const std::set<Ref<Geometry>> &geoms) {
@@ -530,6 +647,7 @@ public:
         m_geomInstSlotBuffer.initialize(g_gpuEnv.cuContext, bufferType, geomInstSlots);
         m_lightGeomInstDist.initialize(g_gpuEnv.cuContext, bufferType, nullptr, geomInstSlots.size());
         m_dirty = true;
+        m_gasIsDirty = true;
     }
 
     const BoundingBox3D &getAABB() const {
@@ -541,7 +659,7 @@ public:
     }
 
     void buildAS(CUstream stream) {
-        if (!m_dirty)
+        if (!m_gasIsDirty)
             return;
 
         OptixAccelBufferSizes sizes;
@@ -559,12 +677,57 @@ public:
 
         m_optixGas.rebuild(stream, m_optixAsMem, m_optixAsScratchMem);
 
+        m_gasIsDirty = false;
+    }
+
+    uint32_t getSlot() const {
+        return m_slot;
+    }
+
+    void setUpDeviceData(shared::GeometryGroup* deviceData) {
+        if (!m_dirty)
+            return;
+
+        deviceData->geomInstSlots = m_geomInstSlotBuffer.getDevicePointer();
+        m_lightGeomInstDist.getDeviceType(&deviceData->lightGeomInstDist);
+
         m_dirty = false;
     }
 
-    void setUpDeviceData(shared::Instance* deviceData) {
-        deviceData->geomInstSlots = m_geomInstSlotBuffer.getDevicePointer();
-        m_lightGeomInstDist.getDeviceType(&deviceData->lightGeomInstDist);
+    void setUpLightDistribution(
+        CUstream stream,
+        const shared::GeometryGroup* deviceData,
+        const shared::GeometryInstance* geomInstBuffer) const {
+        if (!m_lightGeomInstDist.isInitialized())
+            return;
+        uint32_t numGeomInsts = m_geomInstSlotBuffer.numElements();
+        g_gpuEnv.computeLightProbs.computeGeomInstProbBuffer.launchWithThreadDim(
+            stream, cudau::dim3(numGeomInsts),
+            deviceData, numGeomInsts,
+            geomInstBuffer);
+    }
+    void scanLightDistribution(
+        CUstream stream,
+        const shared::GeometryGroup* deviceData) const {
+        if (!m_lightGeomInstDist.isInitialized())
+            return;
+        uint32_t numGeomInsts = m_geomInstSlotBuffer.numElements();
+        const cudau::Buffer &scanScratchMem = g_scene.getScanScratchMemory();
+        size_t scratchMemSize = scanScratchMem.sizeInBytes();
+        CUDADRV_CHECK(cubd::DeviceScan::ExclusiveSum(
+            scanScratchMem.getDevicePointer(), scratchMemSize,
+            m_lightGeomInstDist.weightsOnDevice(),
+            m_lightGeomInstDist.cdfOnDevice(),
+            numGeomInsts, stream));
+    }
+    void finalizeLightDistribution(
+        CUstream stream,
+        const shared::GeometryGroup* deviceData) const {
+        if (!m_lightGeomInstDist.isInitialized())
+            return;
+        g_gpuEnv.computeLightProbs.finalizeDiscreteDistribution1D.launchWithThreadDim(
+            stream, cudau::dim3(1),
+            &deviceData->lightGeomInstDist);
     }
 };
 
@@ -609,7 +772,7 @@ public:
         m_dirty = true;
     }
 
-    void setUpDeviceType(shared::Instance* deviceData, float timePoint) {
+    void setUpDeviceData(shared::Instance* deviceData, float timePoint) {
         uint32_t numStates = static_cast<uint32_t>(m_keyStates.size());
         int idx = 0;
         for (int d = nextPowerOf2(numStates) >> 1; d >= 1; d >>= 1) {
@@ -630,10 +793,10 @@ public:
             translate4x4(position) * orientation.toMatrix4x4() * scale4x4(scale) *
             m_staticTransform;
 
+        deviceData->geomGroupSlot = m_geomGroup->getSlot();
         deviceData->transform = transform;
         deviceData->prevTransform = transform; // TODO?
         deviceData->uniformScale = scale;
-        m_geomGroup->setUpDeviceData(deviceData);
 
         const float xfmArray[12] = {
             transform.m00, transform.m01, transform.m02, transform.m03,
@@ -663,7 +826,7 @@ public:
     Camera(const std::vector<KeyCameraState> &keyStates) :
         m_keyStates(keyStates) {}
 
-    void setUpDeviceType(shared::PerspectiveCamera* deviceData, float timePoint) {
+    void setUpDeviceData(shared::PerspectiveCamera* deviceData, float timePoint) {
         uint32_t numStates = static_cast<uint32_t>(m_keyStates.size());
         int idx = 0;
         for (int d = nextPowerOf2(numStates) >> 1; d >= 1; d >>= 1) {

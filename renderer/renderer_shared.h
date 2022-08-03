@@ -39,6 +39,7 @@ struct StaticPipelineLaunchParameters {
     BSDFProcedureSet* bsdfProcedureSets;
     SurfaceMaterial* surfaceMaterials;
     GeometryInstance* geometryInstances;
+    GeometryGroup* geometryGroups;
 
     int2 imageSize;
     optixu::NativeBlockBuffer2D<PCG32RNG> rngBuffer;

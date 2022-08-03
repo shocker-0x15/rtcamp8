@@ -203,6 +203,14 @@ public:
         m_numValues = numValues;
     }
 
+    CUDA_COMMON_FUNCTION const RealType* weights() const {
+        return m_weights;
+    }
+
+    CUDA_COMMON_FUNCTION const RealType* cdfs() const {
+        return m_CDF;
+    }
+
 #if defined(__CUDA_ARCH__) || defined(OPTIXU_Platform_CodeCompletion)
     CUDA_DEVICE_FUNCTION uint32_t setWeightAt(uint32_t index, RealType value) {
         m_weights[index] = value;
@@ -211,6 +219,7 @@ public:
     CUDA_DEVICE_FUNCTION void finalize() {
         uint32_t lastIndex = m_numValues - 1;
         m_integral = m_CDF[lastIndex] + m_weights[lastIndex];
+        //printf("%g\n", m_integral);
     }
 #endif
 };
@@ -845,13 +854,16 @@ struct StaticTransform {
     }
 };
 
+struct GeometryGroup {
+    const uint32_t* geomInstSlots;
+    LightDistribution lightGeomInstDist;
+};
+
 struct Instance {
     StaticTransform transform;
     StaticTransform prevTransform;
     float uniformScale;
-
-    const uint32_t* geomInstSlots;
-    LightDistribution lightGeomInstDist;
+    uint32_t geomGroupSlot;
 };
 
 } // namespace rtc8::shared

@@ -75,10 +75,12 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void computeSurfacePoint(
         normalize(inst.transform * localShadingTangent));
     surfPt->texCoord = b0 * vs[0].texCoord + b1 * vs[1].texCoord + b2 * vs[2].texCoord;
 
+    const GeometryGroup &geomGroup = plp.s->geometryGroups[inst.geomGroupSlot];
+
     float lightProb = 1.0f;
     if (plp.f->envLight.enabled)
         lightProb *= (1 - probToSampleEnvLight);
-    float geomGroupImportance = inst.lightGeomInstDist.integral();
+    float geomGroupImportance = geomGroup.lightGeomInstDist.integral();
     float instImportance = pow2(inst.uniformScale) * geomGroupImportance;
     float instProb = instImportance / plp.f->lightInstDist.integral();
     if (instProb == 0.0f) {
@@ -146,8 +148,10 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void sampleLight(
         // EN: Next, sample a geometry instance which belongs to the sampled instance.
         float geomInstProb;
         float uPrim;
-        uint32_t geomInstIndexInInst = inst.lightGeomInstDist.sample(uGeomInst, &geomInstProb, &uPrim);
-        uint32_t geomInstIndex = inst.geomInstSlots[geomInstIndexInInst];
+        const GeometryGroup &geomGroup = plp.s->geometryGroups[inst.geomGroupSlot];
+        uint32_t geomInstIndexInGeomGroup =
+            geomGroup.lightGeomInstDist.sample(uGeomInst, &geomInstProb, &uPrim);
+        uint32_t geomInstIndex = geomGroup.geomInstSlots[geomInstIndexInGeomGroup];
         lightProb *= geomInstProb;
         const GeometryInstance &geomInst = plp.s->geometryInstances[geomInstIndex];
         if (geomInstProb == 0.0f) {
