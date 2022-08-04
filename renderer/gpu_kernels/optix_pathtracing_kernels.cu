@@ -1,11 +1,11 @@
 ﻿#include "../renderer_shared.h"
-#include "../../ext/nanovdb/NanoVDB.h"
+//#include "../../ext/nanovdb/NanoVDB.h"
 
 using namespace rtc8;
 using namespace rtc8::shared;
 using namespace rtc8::device;
 
-static constexpr bool debugVisualizeBaseColor = true;
+static constexpr bool debugVisualizeBaseColor = false;
 
 
 
@@ -111,7 +111,7 @@ CUDA_DEVICE_KERNEL void RT_AH_NAME(visibility)() {
 template <bool useSolidAngleSampling>
 CUDA_DEVICE_FUNCTION CUDA_INLINE void sampleLight(
     const Point3D &shadingPoint,
-    float ul, bool sampleEnvLight, float u0, float u1,
+    bool sampleEnvLight, float ul, float u0, float u1,
     shared::LightSample* lightSample, float* areaPDensity) {
     if (sampleEnvLight) {
         float phi, theta;
@@ -142,7 +142,6 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void sampleLight(
         }
         //Assert(inst.lightGeomInstDist.integral() > 0.0f,
         //       "Non-emissive inst %u, prob %g, u: %g(0x%08x).", instIndex, instProb, ul, *(uint32_t*)&ul);
-
 
         // JP: 次にサンプルしたインスタンスに属するジオメトリインスタンスをサンプルする。
         // EN: Next, sample a geometry instance which belongs to the sampled instance.
@@ -332,6 +331,7 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
         dist2 = shadowRayDir.squaredLength();
         traceLength = std::sqrt(dist2);
         shadowRayDir /= traceLength;
+        lpCos /= traceLength;
     }
 
     float visibility = 1.0f;
@@ -354,8 +354,9 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
         // Assume a diffuse emitter.
         RGBSpectrum Le = lightSample.emittance / pi_v<float>;
         RGBSpectrum fsValue = bsdf.evaluateF(bsdfQuery, vInLocal);
-        float G = lpCos * absDot(shadowRayDir, surfPt.geometricNormal) / dist2;
-        ret = fsValue * Le * G;
+        float spCos = absDot(shadowRayDir, surfPt.geometricNormal);
+        float G = lpCos * spCos / dist2;
+        ret = fsValue * Le * (misWeight * G / areaPDensity);
     }
 
     return ret;
@@ -380,11 +381,11 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
         rayOrigin = camera.position;
         Vector3D localRayDir = Vector3D(vw * (-0.5f + px), vh * (0.5f - py), -1).normalize();
         rayDirection = normalize(camera.orientation.toMatrix3x3() * localRayDir);
-        dirPDensity = 1 / (pow3(localRayDir.z) * sensorArea);
+        dirPDensity = 1 / (pow3(std::fabs(localRayDir.z)) * sensorArea);
     }
 
     RGBSpectrum contribution = RGBSpectrum::Zero();
-    RGBSpectrum throughput = RGBSpectrum::One();
+    RGBSpectrum throughput = RGBSpectrum::One() / dirPDensity;
     float initImportance = throughput.luminance();
     uint32_t pathLength = 0;
     while (true) {
@@ -411,9 +412,6 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
 
         const SurfaceMaterial &surfMat = plp.s->surfaceMaterials[geomInst.surfMatSlot];
 
-        //if (launchIndex == plp.f->mousePosition && plp.f->enableDebugPrint)
-        //    printf("Tex: %p, DC: %u\n",
-        //           geomInst.normal, geomInst.readModifiedNormal);
         if (geomInst.normal) {
             Normal3D modLocalNormal = geomInst.readModifiedNormal(
                 geomInst.normal, geomInst.normalDimInfo, surfPt.texCoord);
@@ -458,10 +456,16 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
         BSDFSample bsdfSample(rng.getFloat0cTo1o(), rng.getFloat0cTo1o());
         BSDFQueryResult bsdfResult;
         RGBSpectrum fsValue = bsdf.sampleF(bsdfQuery, bsdfSample, &bsdfResult);
+        if (bsdfResult.dirPDensity == 0.0f)
+            break; // sampling failed.
         rayDirection = surfPt.fromLocal(bsdfResult.dirLocal);
         float dotSGN = dot(rayDirection, surfPt.geometricNormal);
         RGBSpectrum localThroughput = fsValue * (std::fabs(dotSGN) / bsdfResult.dirPDensity);
         throughput *= localThroughput;
+        Assert(
+            localThroughput.allNonNegativeFinite(),
+            "tp: (%g, %g, %g), dotSGN: %g, dirP: %g",
+            rgbprint(localThroughput), dotSGN, bsdfResult.dirPDensity);
 
         rayOrigin = offsetRayOrigin(surfPt.position, (dotSGN > 0 ? 1 : -1) * surfPt.geometricNormal);
         dirPDensity = bsdfResult.dirPDensity;

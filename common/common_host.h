@@ -441,6 +441,26 @@ using LightDistribution = DiscreteDistribution1D;
 
 
 
+struct MovingAverageTime {
+    float values[60];
+    uint32_t index;
+    uint32_t numValidValues;
+    MovingAverageTime() : index(0), numValidValues(0) {}
+    void append(float value) {
+        values[index] = value;
+        index = (index + 1) % lengthof(values);
+        numValidValues = std::min<uint32_t>(numValidValues + 1, static_cast<uint32_t>(lengthof(values)));
+    }
+    float getAverage() const {
+        float sum = 0.0f;
+        for (uint32_t i = 0; i < numValidValues; ++i)
+            sum += values[(index - 1 - i + lengthof(values)) % lengthof(values)];
+        return numValidValues > 0 ? sum / numValidValues : 0.0f;
+    }
+};
+
+
+
 void saveImage(
     const std::filesystem::path &filepath, uint32_t width, uint32_t height, const uint32_t* data);
 void saveImageHDR(

@@ -73,6 +73,7 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
 
     g_gpuEnv.initialize();
 
+    LambertianSurfaceMaterial::setBSDFProcedureSet();
     SimplePBRSurfaceMaterial::setBSDFProcedureSet();
 
     g_gpuEnv.setupDeviceData();
@@ -436,6 +437,28 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
     g_scene.setUpLightGeomDistributions(cuStreams[0]);
     //g_scene.checkLightGeomDistributions();
 
+    struct GPUTimer {
+        cudau::Timer frame;
+        cudau::Timer buildASs;
+        cudau::Timer computeLightProbs;
+        cudau::Timer pathTracing;
+
+        void initialize() {
+            frame.initialize(g_gpuEnv.cuContext);
+            buildASs.initialize(g_gpuEnv.cuContext);
+            computeLightProbs.initialize(g_gpuEnv.cuContext);
+            pathTracing.initialize(g_gpuEnv.cuContext);
+        }
+
+        void finalize() {
+
+        }
+    };
+
+    GPUTimer gpuTimers[2];
+    for (GPUTimer &gpuTimer : gpuTimers)
+        gpuTimer.initialize();
+
     while (true) {
         uint32_t curBufIdx = frameIndex % 2;
         uint32_t prevBufIdx = (frameIndex + 1) % 2;
@@ -444,6 +467,7 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
         CUstream &prevCuStream = cuStreams[curBufIdx];
         shared::PerspectiveCamera curCamera = cameras[curBufIdx];
         shared::PerspectiveCamera prevCamera = cameras[prevBufIdx];
+        GPUTimer &curGpuTimer = gpuTimers[curBufIdx];
 
         if (glfwWindowShouldClose(window))
             break;
@@ -492,6 +516,31 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
 
 
 
+        // Stats Window
+        {
+            ImGui::Begin("Stats", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+
+            static MovingAverageTime cudaFrameTime;
+            static MovingAverageTime updateTime;
+            static MovingAverageTime computeLightProbsTime;
+            static MovingAverageTime pathTraceTime;
+
+            cudaFrameTime.append(curGpuTimer.frame.report());
+            updateTime.append(curGpuTimer.buildASs.report());
+            computeLightProbsTime.append(curGpuTimer.computeLightProbs.report());
+            pathTraceTime.append(curGpuTimer.pathTracing.report());
+
+            //ImGui::SetNextItemWidth(100.0f);
+            ImGui::Text("CUDA/OptiX GPU %.3f [ms]:", cudaFrameTime.getAverage());
+            ImGui::Text("  Update: %.3f [ms]", updateTime.getAverage());
+            ImGui::Text("  Compute Light Probs: %.3f [ms]", computeLightProbsTime.getAverage());
+            ImGui::Text("  Path Trace: %.3f [ms]", pathTraceTime.getAverage());
+
+            ImGui::End();
+        }
+
+
+
         bool newSequence = resized || frameIndex == 0/* || resetAccumulation*/;
         bool firstAccumFrame =
             /*animate || !enableAccumulation || cameraIsActuallyMoving || */newSequence;
@@ -519,16 +568,25 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
 
 
         CUDADRV_CHECK(cuStreamSynchronize(curCuStream));
+
+        curGpuTimer.frame.start(curCuStream);
         outputBufferHolder.beginCUDAAccess(curCuStream);
 
         perFramePlpOnHost.outputBuffer = outputBufferHolder.getNext();
+
+        curGpuTimer.buildASs.start(curCuStream);
         perFramePlpOnHost.travHandle = g_scene.buildASs(curCuStream);
+        curGpuTimer.buildASs.stop(curCuStream);
+
         CUDADRV_CHECK(cuMemcpyHtoDAsync(
             perFramePlpOnDevice, &perFramePlpOnHost, sizeof(perFramePlpOnHost), curCuStream));
+
+        curGpuTimer.computeLightProbs.start(curCuStream);
         g_scene.setUpDeviceDataBuffers(timePoint);
         g_scene.setUpLightInstDistribution(
             curCuStream,
             perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, lightInstDist));
+        curGpuTimer.computeLightProbs.stop(curCuStream);
         //g_scene.checkLightInstDistribution(
         //    perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, lightInstDist));
 
@@ -542,16 +600,19 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
         //    printf("");
         //}
 
+        curGpuTimer.pathTracing.start(curCuStream);
         g_gpuEnv.pathTracing.setEntryPoint(PathTracingEntryPoint::pathTrace);
         g_gpuEnv.pathTracing.optixPipeline.launch(
             curCuStream, plpOnDevice, renderTargetSizeX, renderTargetSizeY, 1);
+        curGpuTimer.pathTracing.stop(curCuStream);
 
         g_gpuEnv.applyToneMap.launchWithThreadDim(
             curCuStream, cudau::dim3(renderTargetSizeX, renderTargetSizeY));
 
         outputBufferHolder.endCUDAAccess(curCuStream, true);
+        curGpuTimer.frame.stop(curCuStream);
 
-        CUDADRV_CHECK(cuStreamSynchronize(curCuStream));
+        //CUDADRV_CHECK(cuStreamSynchronize(curCuStream));
         //glFinish();
         //{
         //    SDRImageSaverConfig config = {};

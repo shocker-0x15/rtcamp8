@@ -11,6 +11,9 @@ static constexpr bool useGenericBSDF = false;
 #define HARD_CODED_BSDF SimplePBR_BRDF
 //#define HARD_CODED_BSDF LambertBRDF
 
+#define DEBUG_MOUSE_POS_CONDITION \
+    (getMousePosition() == make_int2(optixGetLaunchIndex()) && getDebugPrintEnabled())
+
 #define PROCESS_DYNAMIC_FUNCTIONS \
     PROCESS_DYNAMIC_FUNCTION(readModifiedNormalFromNormalMap), \
     PROCESS_DYNAMIC_FUNCTION(readModifiedNormalFromNormalMap2ch), \
@@ -753,7 +756,7 @@ struct EnvironmentalLight {
     uint32_t body[sizeof(ImageBasedEnvironmentalLight) / sizeof(uint32_t)];
 
     EnvLightSample envLightSample;
-    unsigned int enabled : 1;
+    uint32_t enabled : 1;
 
 #if defined(__CUDA_ARCH__) || defined(OPTIXU_Platform_CodeCompletion)
     CUDA_DEVICE_FUNCTION RGBSpectrum sample(
@@ -877,6 +880,10 @@ struct Instance {
 namespace rtc8::device {
 
 static constexpr float RayEpsilon = 1e-4;
+
+CUDA_DEVICE_FUNCTION int2 getMousePosition();
+CUDA_DEVICE_FUNCTION bool getDebugPrintEnabled();
+CUDA_DEVICE_FUNCTION const shared::BSDFProcedureSet &getBSDFProcedureSet(uint32_t slot);
 
 
 
@@ -1647,8 +1654,6 @@ DEFINE_SETUP_BSDF_CALLABLE(SimplePBR_BRDF);
 #undef DEFINE_SETUP_BSDF_CALLABLE
 
 
-
-CUDA_DEVICE_FUNCTION const shared::BSDFProcedureSet &getBSDFProcedureSet(uint32_t slot);
 
 template <bool isGeneric>
 class BSDFTemplate;

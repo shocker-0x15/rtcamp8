@@ -111,6 +111,7 @@ function(set_common_sources)
         GENERATED_FILES CUDA_PTXES
         NVCC_OPTIONS
         "$<$<CONFIG:Debug>:-G>"
+        "$<$<CONFIG:Debug>:-D_DEBUG=1>"
         "--gpu-architecture=compute_52"
         "-std=c++17"
         "-cudart" "shared"
@@ -305,5 +306,4 @@ target_link_libraries(
     assimp::assimp
 )
 
-add_subdirectory(sandbox)
 add_subdirectory(renderer)

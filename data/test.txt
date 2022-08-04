@@ -13,7 +13,7 @@ addkey cornell_box_inst 1.0 false false
 rotate cornell_box_inst 0.0 1.0 0.0 360.0
 addkey cornell_box_inst 2.0 false false
 
-rect 1 1 rectlight
+rect 0.5 0.5 rectlight
 emittance rectlight 100 100 100
 
 inst rectlight rectlight_inst
@@ -21,7 +21,7 @@ trans rectlight_inst 0.0 0.999 0.0
 addkey rectlight_inst 0.0 false false
 
 camera cam
-fovy cam 60
+fovy cam 50
 trans cam 0.0 0.0 3.5
 lookat cam 0.0 0.0 0.0 0.0 1.0 0.0
 addkey cam 0.0 false false

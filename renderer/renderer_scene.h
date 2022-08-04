@@ -110,14 +110,14 @@ struct GPUEnvironment {
                 "plp", sizeof(shared::PipelineLaunchParameters),
                 false, OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING,
                 OPTIX_EXCEPTION_FLAG_STACK_OVERFLOW | OPTIX_EXCEPTION_FLAG_TRACE_DEPTH |
-                DEBUG_SELECT(OPTIX_EXCEPTION_FLAG_DEBUG, OPTIX_EXCEPTION_FLAG_NONE),
+                /*DEBUG_SELECT(OPTIX_EXCEPTION_FLAG_DEBUG, */OPTIX_EXCEPTION_FLAG_NONE/*)*/,
                 OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE);
 
             m = p.createModuleFromPTXString(
                 readTxtFile(getExecutableDirectory() / "renderer/ptxes/optix_pathtracing_kernels.ptx"),
                 OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT,
-                DEBUG_SELECT(OPTIX_COMPILE_OPTIMIZATION_LEVEL_0, OPTIX_COMPILE_OPTIMIZATION_DEFAULT),
-                DEBUG_SELECT(OPTIX_COMPILE_DEBUG_LEVEL_FULL, OPTIX_COMPILE_DEBUG_LEVEL_NONE));
+                /*DEBUG_SELECT(OPTIX_COMPILE_OPTIMIZATION_LEVEL_0, */OPTIX_COMPILE_OPTIMIZATION_DEFAULT/*)*/,
+                /*DEBUG_SELECT(OPTIX_COMPILE_DEBUG_LEVEL_FULL, */OPTIX_COMPILE_DEBUG_LEVEL_NONE/*)*/);
 
             pipeline.entryPoints[PathTracingEntryPoint::pathTrace] =
                 p.createRayGenProgram(m, RT_RG_NAME_STR("pathTrace"));
@@ -149,7 +149,7 @@ struct GPUEnvironment {
                 p.setCallableProgram(i, program);
             }
 
-            p.link(1, DEBUG_SELECT(OPTIX_COMPILE_DEBUG_LEVEL_FULL, OPTIX_COMPILE_DEBUG_LEVEL_NONE));
+            p.link(1, /*DEBUG_SELECT(OPTIX_COMPILE_DEBUG_LEVEL_FULL, */OPTIX_COMPILE_DEBUG_LEVEL_NONE/*)*/);
 
             optixDefaultMaterial.setHitGroup(shared::PathTracingRayType::Closest, chPathTrace);
             optixDefaultMaterial.setHitGroup(shared::PathTracingRayType::Visibility, ahVisibility);
@@ -386,6 +386,49 @@ public:
     virtual void setUpDeviceData(shared::SurfaceMaterial* deviceData)  {
         if (m_emittance)
             deviceData->emittance = m_emittance->getDeviceTexture();
+    }
+};
+
+
+
+class LambertianSurfaceMaterial : public SurfaceMaterial {
+    static uint32_t s_procSetSlot;
+
+    Ref<Texture2D> m_reflectance;
+
+public:
+    static void setBSDFProcedureSet() {
+        shared::BSDFProcedureSet procSet;
+        procSet.setupBSDFBody = CallableProgram_setupLambertBRDF;
+        procSet.getSurfaceParameters = CallableProgram_LambertBRDF_getSurfaceParameters;
+        procSet.sampleF = CallableProgram_LambertBRDF_sampleF;
+        procSet.evaluateF = CallableProgram_LambertBRDF_evaluateF;
+        procSet.evaluatePDF = CallableProgram_LambertBRDF_evaluatePDF;
+        procSet.evaluateDHReflectanceEstimate = CallableProgram_LambertBRDF_evaluateDHReflectanceEstimate;
+        s_procSetSlot = g_gpuEnv.registerBSDFProcedureSet(procSet);
+    }
+
+    LambertianSurfaceMaterial() {}
+
+    void set(
+        const Ref<Texture2D> &reflectance) {
+        m_reflectance = reflectance;
+
+        m_dirty = true;
+    }
+
+    void setUpDeviceData(shared::SurfaceMaterial* deviceData) override {
+        if (!m_dirty)
+            return;
+
+        SurfaceMaterial::setUpDeviceData(deviceData);
+        auto &body = *reinterpret_cast<shared::LambertianSurfaceMaterial*>(deviceData->body);
+        body.reflectance = m_reflectance->getDeviceTexture();
+        body.reflectanceDimInfo = m_reflectance->getDimInfo();
+        deviceData->bsdfProcSetSlot = s_procSetSlot;
+        deviceData->setupBSDFBody = CallableProgram_setupLambertBRDF;
+
+        m_dirty = false;
     }
 };
 

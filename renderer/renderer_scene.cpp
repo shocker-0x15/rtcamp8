@@ -254,6 +254,8 @@ void Scene::checkLightInstDistribution(CUdeviceptr lightInstDistAddr) {
 
 
 
+uint32_t LambertianSurfaceMaterial::s_procSetSlot;
+
 uint32_t SimplePBRSurfaceMaterial::s_procSetSlot;
 
 
@@ -781,13 +783,43 @@ static Ref<cudau::Array> createEmittanceTexture(
 
 
 
+static Ref<SurfaceMaterial> createLambertianMaterial(
+    const std::filesystem::path &reflectancePath, const RGBSpectrum &immReflectance) {
+
+    bool needsDegamma = false;
+
+    Ref<cudau::Array> arrayReflectance;
+    float4 immBaseColor_opacity(immReflectance.r, immReflectance.g, immReflectance.b, 0.0f);
+    if (!reflectancePath.empty()) {
+        hpprintf("  Reading: %s ... ", reflectancePath.string().c_str());
+        bool done = loadTexture(
+            reflectancePath, immBaseColor_opacity,
+            &arrayReflectance, &needsDegamma);
+        hpprintf(done ? "done.\n" : "failed.\n");
+    }
+    if (!arrayReflectance) {
+        createFx4ImmTexture(immBaseColor_opacity, true, &arrayReflectance);
+        needsDegamma = true;
+    }
+
+    auto texReflectance = std::make_shared<Texture2D>(arrayReflectance);
+    if (needsDegamma)
+        texReflectance->setReadMode(cudau::TextureReadMode::NormalizedFloat_sRGB);
+
+    auto ret = std::make_shared<LambertianSurfaceMaterial>();
+    g_scene.allocateSurfaceMaterial(ret);
+
+    ret->set(texReflectance);
+
+    return ret;
+}
+
 static Ref<SurfaceMaterial> createSimplePBRMaterial(
     const std::filesystem::path &baseColor_opacityPath, const RGBSpectrum &immBaseColor, float immOpacity,
     const std::filesystem::path &occlusion_roughness_metallicPath,
     const float3 &immOcclusion_roughness_metallic) {
 
     bool needsDegamma = false;
-
 
     Ref<cudau::Array> arrayBaseColor_opacity;
     float4 immBaseColor_opacity(immBaseColor.r, immBaseColor.g, immBaseColor.b, immOpacity);
@@ -956,7 +988,9 @@ static void loadTriangleMesh(
         //     specular texture as occlusion, roughness, metallic.
         Ref<SurfaceMaterial> surfMat = createSimplePBRMaterial(
             diffuseColorPath, immDiffuseColor, 1.0f,
-            specularColorPath, float3(immSpecularColor.r, immSpecularColor.g, immSpecularColor.b));
+            specularColorPath, float3(0.0f, 0.5f, 0.0f));
+        //Ref<SurfaceMaterial> surfMat = createLambertianMaterial(
+        //    diffuseColorPath, immDiffuseColor);
 
         bool needsDegamma;
         bool isHDR;

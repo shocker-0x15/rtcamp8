@@ -30,7 +30,7 @@ struct LightSample {
     RGBSpectrum emittance;
     Point3D position;
     Normal3D normal;
-    unsigned int atInfinity : 1;
+    uint32_t atInfinity : 1;
 };
 
 
@@ -90,6 +90,14 @@ RT_PIPELINE_LAUNCH_PARAMETERS rtc8::shared::PipelineLaunchParameters plp;
 #endif
 
 namespace rtc8::device {
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE int2 getMousePosition() {
+    return plp.f->mousePosition;
+}
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE bool getDebugPrintEnabled() {
+    return plp.f->enableDebugPrint;
+}
 
 CUDA_DEVICE_FUNCTION CUDA_INLINE const shared::BSDFProcedureSet &getBSDFProcedureSet(uint32_t slot) {
     return plp.s->bsdfProcedureSets[slot];

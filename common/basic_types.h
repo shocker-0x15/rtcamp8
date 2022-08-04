@@ -269,7 +269,7 @@ using pi_v = std::numbers::pi_v<RealType>;
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE bool isnan(RealType x) {
 #if defined(__CUDA_ARCH__)
-    return isnan(x);
+    return static_cast<bool>(::isnan(x));
 #else
     return std::isnan(x);
 #endif
@@ -278,7 +278,7 @@ CUDA_COMMON_FUNCTION CUDA_INLINE bool isnan(RealType x) {
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE bool isinf(RealType x) {
 #if defined(__CUDA_ARCH__)
-    return isinf(x);
+    return static_cast<bool>(::isinf(x));
 #else
     return std::isinf(x);
 #endif
@@ -287,7 +287,7 @@ CUDA_COMMON_FUNCTION CUDA_INLINE bool isinf(RealType x) {
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE bool isfinite(RealType x) {
 #if defined(__CUDA_ARCH__)
-    return isfinite(x);
+    return static_cast<bool>(::isfinite(x));
 #else
     return std::isfinite(x);
 #endif
@@ -296,7 +296,7 @@ CUDA_COMMON_FUNCTION CUDA_INLINE bool isfinite(RealType x) {
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE void sincos(RealType angle, RealType* s, RealType* c) {
 #if defined(__CUDA_ARCH__)
-    sincosf(angle, s, c);
+    ::sincosf(angle, s, c);
 #else
     *s = std::sin(angle);
     *c = std::cos(angle);
