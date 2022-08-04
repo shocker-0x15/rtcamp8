@@ -1,0 +1,35 @@
+image 1920 1080
+time 0 10 60
+
+mesh "C:\Users\shocker_0x15\repos\assets\crytek_sponza\sponza.obj" 0.01 sponza
+
+inst sponza sponza_inst
+trans sponza_inst 0.0 0.0 0.36125
+addkey sponza_inst 0.0 false false
+
+rect 2 2 rectlight
+emittance rectlight 600 600 600
+
+inst rectlight rectlight_inst
+trans rectlight_inst 0.0 15.0 0.0
+addkey rectlight_inst 0.0 false false
+
+camera cam
+
+fovy cam 70
+lookat cam 0.0 10.0 0.0 1.0 3.0 0.0 0.0 1.0 0.0
+addkey cam 0.0 false false
+
+fovy cam 50
+lookat cam 0.0 3.0 0.0 1.0 3.0 0.0 0.0 1.0 0.0
+addkey cam 2.0 false false
+
+fovy cam 20
+addkey cam 3.0 false false
+
+fovy cam 50
+lookat cam 0.0 3.0 0.0 0.0 3.0 1.0 0.0 1.0 0.0
+addkey cam 5.0 false false
+
+lookat cam 0.0 3.0 0.0 -1.0 3.0 0.0 0.0 1.0 0.0
+addkey cam 10.0 false false

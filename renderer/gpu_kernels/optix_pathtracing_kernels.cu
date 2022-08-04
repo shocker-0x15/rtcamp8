@@ -475,7 +475,7 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
     RGBSpectrum prevResult = RGBSpectrum::Zero();
     if (plp.f->numAccumFrames > 0)
         prevResult = plp.s->accumBuffer.read(launchIndex);
-    float curFrameWeight = 1.0f / plp.f->numAccumFrames;
+    float curFrameWeight = 1.0f / (plp.f->numAccumFrames + 1);
     RGBSpectrum result = (1 - curFrameWeight) * prevResult + curFrameWeight * contribution;
     plp.s->accumBuffer.write(launchIndex, result);
 }

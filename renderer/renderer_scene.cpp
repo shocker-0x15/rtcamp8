@@ -56,7 +56,7 @@ void Scene::allocateInstance(const Ref<Instance> &inst) {
     m_optixIas.addChild(optixInst);
 }
 
-void Scene::setUpDeviceDataBuffers(float timePoint) {
+void Scene::setUpDeviceDataBuffers(CUstream stream, float timePoint) {
     size_t hitGroupSbtSize;
     m_optixScene.generateShaderBindingTableLayout(&hitGroupSbtSize);
     if (!m_hitGroupSbt.isInitialized()) {
@@ -70,29 +70,37 @@ void Scene::setUpDeviceDataBuffers(float timePoint) {
     g_gpuEnv.pathTracing.optixPipeline.setHitGroupShaderBindingTable(
         m_hitGroupSbt, m_hitGroupSbt.getMappedPointer());
 
-    shared::SurfaceMaterial* surfMats = m_surfaceMaterialBuffer.map();
     for (const auto &it : m_surfaceMaterialSlotOwners) {
-        it.second->setUpDeviceData(&surfMats[it.first]);
+        shared::SurfaceMaterial deviceData = {};
+        if (it.second->setUpDeviceData(&deviceData))
+            CUDADRV_CHECK(cuMemcpyHtoDAsync(
+                m_surfaceMaterialBuffer.getCUdeviceptrAt(it.first),
+                &deviceData, sizeof(deviceData), stream));
     }
-    m_surfaceMaterialBuffer.unmap();
 
-    shared::GeometryInstance* geomInsts = m_geometryInstanceBuffer.map();
     for (const auto &it : m_geometryInstanceSlotOwners) {
-        it.second->setUpDeviceData(&geomInsts[it.first]/*, timePoint*/);
+        shared::GeometryInstance deviceData = {};
+        if (it.second->setUpDeviceData(&deviceData/*, timePoint*/))
+            CUDADRV_CHECK(cuMemcpyHtoDAsync(
+                m_geometryInstanceBuffer.getCUdeviceptrAt(it.first),
+                &deviceData, sizeof(deviceData), stream));
     }
-    m_geometryInstanceBuffer.unmap();
 
-    shared::GeometryGroup* geomGroups = m_geometryGroupBuffer.map();
     for (const auto &it : m_geometryGroupSlotOwners) {
-        it.second->setUpDeviceData(&geomGroups[it.first]/*, timePoint*/);
+        shared::GeometryGroup deviceData = {};
+        if (it.second->setUpDeviceData(&deviceData/*, timePoint*/))
+            CUDADRV_CHECK(cuMemcpyHtoDAsync(
+                m_geometryGroupBuffer.getCUdeviceptrAt(it.first),
+                &deviceData, sizeof(deviceData), stream));
     }
-    m_geometryGroupBuffer.unmap();
 
-    shared::Instance* insts = m_instanceBuffer.map();
     for (const auto &it : m_instanceSlotOwners) {
-        it.second->setUpDeviceData(&insts[it.first], timePoint);
+        shared::Instance deviceData = {};
+        if (it.second->setUpDeviceData(&deviceData, timePoint))
+            CUDADRV_CHECK(cuMemcpyHtoDAsync(
+                m_instanceBuffer.getCUdeviceptrAt(it.first),
+                &deviceData, sizeof(deviceData), stream));
     }
-    m_instanceBuffer.unmap();
 }
 
 OptixTraversableHandle Scene::buildASs(CUstream stream) {
@@ -909,7 +917,7 @@ static void loadTriangleMesh(
         aiProcess_Triangulate
         | aiProcess_GenNormals
         | aiProcess_CalcTangentSpace
-        /*| aiProcess_FlipUVs*/);
+        | aiProcess_FlipUVs);
     if (!aiscene) {
         hpprintf("failed to load %s.\n", filePath.string().c_str());
         return;
@@ -986,11 +994,11 @@ static void loadTriangleMesh(
         //     が格納されていると仮定している。
         // EN: We assume diffuse texture as base color + opacity,
         //     specular texture as occlusion, roughness, metallic.
-        Ref<SurfaceMaterial> surfMat = createSimplePBRMaterial(
-            diffuseColorPath, immDiffuseColor, 1.0f,
-            specularColorPath, float3(0.0f, 0.5f, 0.0f));
-        //Ref<SurfaceMaterial> surfMat = createLambertianMaterial(
-        //    diffuseColorPath, immDiffuseColor);
+        //Ref<SurfaceMaterial> surfMat = createSimplePBRMaterial(
+        //    diffuseColorPath, immDiffuseColor, 1.0f,
+        //    specularColorPath, float3(0.0f, 0.5f, 0.0f));
+        Ref<SurfaceMaterial> surfMat = createLambertianMaterial(
+            diffuseColorPath, immDiffuseColor);
 
         bool needsDegamma;
         bool isHDR;
@@ -1242,6 +1250,7 @@ struct InstanceInfo {
     float nextKeyScale;
     Quaternion nextKeyOrientation;
     std::vector<KeyInstanceState> keyStates;
+    uint32_t hasCyclicAnim : 1;
 };
 
 struct CameraInfo {
@@ -1415,6 +1424,7 @@ std::map<std::string, lineFunc> processors = {
             instInfo.nextKeyScale = 1.0f;
             instInfo.nextKeyOrientation = Quaternion::Identity();
             instInfo.nextKeyPosition = Point3D::Zero();
+            instInfo.hasCyclicAnim = false;
             context.instInfos[instName] = instInfo;
         }
     },
@@ -1487,11 +1497,9 @@ std::map<std::string, lineFunc> processors = {
             std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
 
             std::string tgtName = m[1].str();
-            bool isInst = context.instInfos.contains(tgtName);
-            bool isCam = context.camInfos.contains(tgtName);
             throwRuntimeErrorAtLine(
-                isInst || isCam, context.lineIndex + 1,
-                "Instance/Camera %s does not exist.",
+                context.instInfos.contains(tgtName), context.lineIndex + 1,
+                "Instance%s does not exist.",
                 tgtName.c_str());
 
             Point3D position(
@@ -1499,10 +1507,7 @@ std::map<std::string, lineFunc> processors = {
                 std::stof(m[3].str().c_str()),
                 std::stof(m[4].str().c_str()));
 
-            if (isInst)
-                context.instInfos.at(tgtName).nextKeyPosition = position;
-            else
-                context.camInfos.at(tgtName).nextKeyPosition = position;
+            context.instInfos.at(tgtName).nextKeyPosition = position;
         }
     },
     {
@@ -1530,8 +1535,8 @@ std::map<std::string, lineFunc> processors = {
         "lookat",
         [](SceneLoadingContext &context) {
             static const char* cmd = "lookat";
-            static const std::regex re =
-                makeRegex({cmd, reString, reReal, reReal, reReal, reReal, reReal, reReal });
+            static const std::regex re = makeRegex({
+                cmd, reString, reReal, reReal, reReal, reReal, reReal, reReal, reReal, reReal, reReal });
             std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
 
             std::string camName = m[1].str();
@@ -1540,14 +1545,18 @@ std::map<std::string, lineFunc> processors = {
                 "Camera %s does not exist.",
                 camName.c_str());
 
-            context.camInfos.at(camName).nextKeyLookAt = Point3D(
+            context.camInfos.at(camName).nextKeyPosition = Point3D(
                 std::stof(m[2].str().c_str()),
                 std::stof(m[3].str().c_str()),
                 std::stof(m[4].str().c_str()));
-            context.camInfos.at(camName).nextKeyUp = Vector3D(
+            context.camInfos.at(camName).nextKeyLookAt = Point3D(
                 std::stof(m[5].str().c_str()),
                 std::stof(m[6].str().c_str()),
                 std::stof(m[7].str().c_str()));
+            context.camInfos.at(camName).nextKeyUp = Vector3D(
+                std::stof(m[8].str().c_str()),
+                std::stof(m[9].str().c_str()),
+                std::stof(m[10].str().c_str()));
         }
     },
     {
@@ -1589,6 +1598,23 @@ std::map<std::string, lineFunc> processors = {
                 state.fovY = camInfo.nextKeyFovY;
                 camInfo.keyStates.push_back(state);
             }
+        }
+    },
+    {
+        "cyclic",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "cyclic";
+            static const std::regex re = makeRegex({cmd, reString});
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string tgtName = m[1].str();
+            throwRuntimeErrorAtLine(
+                context.instInfos.contains(tgtName), context.lineIndex + 1,
+                "Instance %s does not exist.",
+                tgtName.c_str());
+
+            InstanceInfo &instInfo = context.instInfos.at(tgtName);
+            instInfo.hasCyclicAnim = true;
         }
     },
 };
@@ -1717,7 +1743,7 @@ void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* render
             auto inst = std::make_shared<Instance>();
             g_scene.allocateInstance(inst);
             inst->setGeometryGroup(geomGroupInst.geomGroup, geomGroupInst.transform);
-            inst->setKeyStates(states);
+            inst->setKeyStates(states, instInfo.hasCyclicAnim);
         }
     }
 }

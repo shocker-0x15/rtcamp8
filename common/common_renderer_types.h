@@ -8,8 +8,8 @@
 //     without dynamic function calls by callable programs or function pointers.
 static constexpr bool useGenericBSDF = false;
 //#define HARD_CODED_BSDF DichromaticBRDF
-#define HARD_CODED_BSDF SimplePBR_BRDF
-//#define HARD_CODED_BSDF LambertBRDF
+//#define HARD_CODED_BSDF SimplePBR_BRDF
+#define HARD_CODED_BSDF LambertBRDF
 
 #define DEBUG_MOUSE_POS_CONDITION \
     (getMousePosition() == make_int2(optixGetLaunchIndex()) && getDebugPrintEnabled())

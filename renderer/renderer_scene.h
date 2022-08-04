@@ -286,7 +286,7 @@ public:
 
 
 
-    void setUpDeviceDataBuffers(float timePoint);
+    void setUpDeviceDataBuffers(CUstream stream, float timePoint);
     OptixTraversableHandle buildASs(CUstream stream);
 
 
@@ -383,9 +383,10 @@ public:
         return m_slot;
     }
 
-    virtual void setUpDeviceData(shared::SurfaceMaterial* deviceData)  {
+    virtual bool setUpDeviceData(shared::SurfaceMaterial* deviceData)  {
         if (m_emittance)
             deviceData->emittance = m_emittance->getDeviceTexture();
+        return true;
     }
 };
 
@@ -417,10 +418,11 @@ public:
         m_dirty = true;
     }
 
-    void setUpDeviceData(shared::SurfaceMaterial* deviceData) override {
+    bool setUpDeviceData(shared::SurfaceMaterial* deviceData) override {
         if (!m_dirty)
-            return;
+            return false;
 
+        *deviceData = {};
         SurfaceMaterial::setUpDeviceData(deviceData);
         auto &body = *reinterpret_cast<shared::LambertianSurfaceMaterial*>(deviceData->body);
         body.reflectance = m_reflectance->getDeviceTexture();
@@ -429,6 +431,7 @@ public:
         deviceData->setupBSDFBody = CallableProgram_setupLambertBRDF;
 
         m_dirty = false;
+        return true;
     }
 };
 
@@ -463,10 +466,11 @@ public:
         m_dirty = true;
     }
 
-    void setUpDeviceData(shared::SurfaceMaterial* deviceData) override {
+    bool setUpDeviceData(shared::SurfaceMaterial* deviceData) override {
         if (!m_dirty)
-            return;
+            return false;
 
+        *deviceData = {};
         SurfaceMaterial::setUpDeviceData(deviceData);
         auto &body = *reinterpret_cast<shared::SimplePBRSurfaceMaterial*>(deviceData->body);
         body.baseColor_opacity = m_baseColor_opacity->getDeviceTexture();
@@ -477,6 +481,7 @@ public:
         deviceData->setupBSDFBody = CallableProgram_setupSimplePBR_BRDF;
 
         m_dirty = false;
+        return true;
     }
 };
 
@@ -528,7 +533,9 @@ public:
         return m_slot;
     }
 
-    virtual void setUpDeviceData(shared::GeometryInstance* deviceData) {}
+    virtual bool setUpDeviceData(shared::GeometryInstance* deviceData) {
+        return true;
+    }
 
     virtual void setUpLightDistribution(
         CUstream stream,
@@ -590,15 +597,18 @@ public:
         m_dirty = true;
     }
 
-    void setUpDeviceData(shared::GeometryInstance* deviceData) override {
+    bool setUpDeviceData(shared::GeometryInstance* deviceData) override {
         if (!m_dirty)
-            return;
+            return false;
 
+        *deviceData = {};
         Geometry::setUpDeviceData(deviceData);
         deviceData->vertices = m_vertices->onDevice.getDevicePointer();
         deviceData->triangles = m_triangles.getDevicePointer();
         if (m_emitterPrimDist.isInitialized())
             m_emitterPrimDist.getDeviceType(&deviceData->emitterPrimDist);
+        else
+            std::memset(&deviceData->emitterPrimDist, 0, sizeof(deviceData->emitterPrimDist));
         deviceData->normal = m_normalMap->getDeviceTexture();
         deviceData->normalDimInfo = m_normalMap->getDimInfo();
         if (m_bumpMapType == BumpMapTextureType::NormalMap ||
@@ -611,6 +621,7 @@ public:
         deviceData->surfMatSlot = m_surfMat->getSlot();
 
         m_dirty = false;
+        return true;
     }
 
     void setUpLightDistribution(
@@ -727,14 +738,16 @@ public:
         return m_slot;
     }
 
-    void setUpDeviceData(shared::GeometryGroup* deviceData) {
+    bool setUpDeviceData(shared::GeometryGroup* deviceData) {
         if (!m_dirty)
-            return;
+            return false;
 
+        *deviceData = {};
         deviceData->geomInstSlots = m_geomInstSlotBuffer.getDevicePointer();
         m_lightGeomInstDist.getDeviceType(&deviceData->lightGeomInstDist);
 
         m_dirty = false;
+        return true;
     }
 
     void setUpLightDistribution(
@@ -792,10 +805,12 @@ class Instance {
     Ref<GeometryGroup> m_geomGroup;
     Matrix4x4 m_staticTransform;
     float m_lastTimePoint;
+    uint32_t m_hasCyclicAnim : 1;
     uint32_t m_dirty : 1;
 
 public:
-    Instance() : m_slot(0xFFFFFFFF), m_lastTimePoint(NAN), m_dirty(false) {}
+    Instance() :
+        m_slot(0xFFFFFFFF), m_lastTimePoint(NAN), m_hasCyclicAnim(false), m_dirty(false) {}
 
     void associateScene(uint32_t slot, optixu::Instance optixInst) {
         m_slot = slot;
@@ -810,12 +825,19 @@ public:
         m_dirty = true;
     }
 
-    void setKeyStates(const std::vector<KeyInstanceState> &states) {
+    void setKeyStates(const std::vector<KeyInstanceState> &states, bool hasCyclicAnim) {
         m_keyStates = states;
+        m_hasCyclicAnim = hasCyclicAnim;
         m_dirty = true;
     }
 
-    void setUpDeviceData(shared::Instance* deviceData, float timePoint) {
+    bool setUpDeviceData(shared::Instance* deviceData, float timePoint) {
+        *deviceData = {};
+        if (m_hasCyclicAnim) {
+            float timeBegin = m_keyStates.front().timePoint;
+            float timeEnd = m_keyStates.back().timePoint;
+            timePoint = std::fmodf(timePoint - timeBegin, timeEnd - timeBegin) + timeBegin;
+        }
         uint32_t numStates = static_cast<uint32_t>(m_keyStates.size());
         int idx = 0;
         for (int d = nextPowerOf2(numStates) >> 1; d >= 1; d >>= 1) {
@@ -847,6 +869,8 @@ public:
             transform.m20, transform.m21, transform.m22, transform.m23,
         };
         m_optixInst.setTransform(xfmArray);
+
+        return true;
     }
 };
 
@@ -870,6 +894,9 @@ public:
         m_keyStates(keyStates) {}
 
     void setUpDeviceData(shared::PerspectiveCamera* deviceData, float timePoint) {
+        float timeBegin = m_keyStates.front().timePoint;
+        float timeEnd = m_keyStates.back().timePoint;
+        timePoint = clamp(timePoint, timeBegin, timeEnd);
         uint32_t numStates = static_cast<uint32_t>(m_keyStates.size());
         int idx = 0;
         for (int d = nextPowerOf2(numStates) >> 1; d >= 1; d >>= 1) {
