@@ -37,6 +37,8 @@ file(
     "ext/glfw/include/*"
     "ext/imgui/*"
     "ext/tinyexr/*"
+    "ext/fpng/src/fpng.h"
+    "ext/fpng/src/fpng.cpp"
 )
 list(
     FILTER COMMON_SOURCES INCLUDE REGEX
@@ -154,6 +156,9 @@ function(set_common_sources)
     source_group(
         "non-essentials/ext/tinyexr" REGULAR_EXPRESSION
         "../ext/tinyexr/[^/]*\.(h|hpp|c|cpp)$")
+    source_group(
+        "non-essentials/ext/fpng" REGULAR_EXPRESSION
+        "../ext/fpng/src/[^/]*\.(h|hpp|c|cpp)$")
     source_group(
         "non-essentials/ext/tinyexr/miniz" REGULAR_EXPRESSION
         "../ext/tinyexr/deps/miniz/[^/]*\.(h|hpp|c|cpp)$")

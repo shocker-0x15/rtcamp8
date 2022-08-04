@@ -1,5 +1,6 @@
 ﻿#include "common_host.h"
 #include "../ext/stb_image_write.h"
+#include "../ext/fpng/src/fpng.h"
 #include "tinyexr.h"
 
 namespace rtc8 {
@@ -671,13 +672,24 @@ template class RegularConstantContinuousDistribution1DTemplate<float, true>;
 
 void saveImage(
     const std::filesystem::path &filepath, uint32_t width, uint32_t height, const uint32_t* data) {
-    if (filepath.extension() == ".png")
-        stbi_write_png(filepath.string().c_str(), width, height, 4, data,
-                       width * sizeof(uint32_t));
-    else if (filepath.extension() == ".bmp")
+    if (filepath.extension() == ".png") {
+        //stbi_write_png(filepath.string().c_str(), width, height, 4, data,
+        //               width * sizeof(uint32_t));
+        static bool fpng_initialized = false;
+        if (!fpng_initialized) {
+            fpng::fpng_init();
+            fpng_initialized = true;
+        }
+        bool success = fpng::fpng_encode_image_to_file(
+            filepath.string().c_str(), data, width, height, 4, 0);
+        Assert(success, "failed to write the png file: %s", filepath.string().c_str());
+    }
+    else if (filepath.extension() == ".bmp") {
         stbi_write_bmp(filepath.string().c_str(), width, height, 4, data);
-    else
+    }
+    else {
         Assert_ShouldNotBeCalled();
+    }
 }
 
 void saveImageHDR(

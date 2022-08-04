@@ -761,6 +761,8 @@ static int32_t runApp() {
     g_scene.setUpLightGeomDistributions(cuStream);
     CUDADRV_CHECK(cuStreamSynchronize(cuStream));
 
+    StopWatchHiRes cpuTimer;
+
     uint32_t timeStepIndex = 0;
     while (true) {
         float timePoint =
@@ -799,6 +801,8 @@ static int32_t runApp() {
             cuStream, cudau::dim3(renderConfigs.imageWidth, renderConfigs.imageHeight));
 
         CUDADRV_CHECK(cuStreamSynchronize(cuStream));
+
+        cpuTimer.start();
         SDRImageSaverConfig imageSaverConfig = {};
         imageSaverConfig.alphaForOverride = 1.0f;
         imageSaverConfig.applyToneMap = false;
@@ -808,6 +812,8 @@ static int32_t runApp() {
         char filename[256];
         sprintf_s(filename, "%03u.png", timeStepIndex);
         saveImage(filename, cudaOutputBuffer, imageSaverConfig);
+        uint64_t saveTime = cpuTimer.getElapsed(StopWatchDurationType::Milliseconds);
+        hpprintf("Save %s: %.3f [s]\n", filename, saveTime * 1e-3f);
 
         ++timeStepIndex;
     }
