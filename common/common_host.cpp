@@ -1,4 +1,6 @@
 ﻿#include "common_host.h"
+#include "stopwatch.h"
+
 #include "../ext/stb_image_write.h"
 #include "../ext/fpng/src/fpng.h"
 #include "tinyexr.h"
@@ -918,6 +920,7 @@ public:
     }
 
     void run() {
+        StopWatchHiRes cpuTimer;
         while (true) {
             ImageSaverItem item = {};
             {
@@ -932,7 +935,11 @@ public:
                 m_imageSaverItems.pop_front();
             }
 
+            cpuTimer.start();
             saveImage(item.filePath, item.width, item.height, item.data.get(), item.config);
+            uint64_t saveTime = cpuTimer.getElapsed(StopWatchDurationType::Milliseconds);
+            cpuTimer.reset();
+            hpprintf("Save %s: %.3f [s]\n", item.filePath.string().c_str(), saveTime * 1e-3f);
         }
     }
 
