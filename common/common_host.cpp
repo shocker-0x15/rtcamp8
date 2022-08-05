@@ -3,6 +3,11 @@
 #include "../ext/fpng/src/fpng.h"
 #include "tinyexr.h"
 
+#include <deque>
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
+
 namespace rtc8 {
 
 void devPrintf(const char* fmt, ...) {
@@ -670,15 +675,16 @@ template class RegularConstantContinuousDistribution1DTemplate<float, true>;
 
 
 
+static bool s_fpng_initialized = false;
+
 void saveImage(
     const std::filesystem::path &filepath, uint32_t width, uint32_t height, const uint32_t* data) {
     if (filepath.extension() == ".png") {
         //stbi_write_png(filepath.string().c_str(), width, height, 4, data,
         //               width * sizeof(uint32_t));
-        static bool fpng_initialized = false;
-        if (!fpng_initialized) {
+        if (!s_fpng_initialized) {
             fpng::fpng_init();
-            fpng_initialized = true;
+            s_fpng_initialized = true;
         }
         bool success = fpng::fpng_encode_image_to_file(
             filepath.string().c_str(), data, width, height, 4, 0);
@@ -882,6 +888,96 @@ void saveImage(
     auto data = array.map<float4>();
     saveImage(filepath, array.getWidth(), array.getHeight(), data, config);
     array.unmap();
+}
+
+
+
+struct ImageSaverItem {
+    std::filesystem::path filePath;
+    uint32_t width;
+    uint32_t height;
+    std::shared_ptr<float4[]> data;
+    SDRImageSaverConfig config;
+};
+
+class ImageSaver {
+    std::deque<ImageSaverItem> m_imageSaverItems;
+    std::mutex m_mutex;
+    std::condition_variable m_cond;
+    std::atomic_bool m_finishable;
+    std::thread m_thread;
+
+public:
+    void init() {
+        if (!s_fpng_initialized) {
+            fpng::fpng_init();
+            s_fpng_initialized = true;
+        }
+        m_finishable = false;
+        m_thread = std::thread(std::bind(&ImageSaver::run, this));
+    }
+
+    void run() {
+        while (true) {
+            ImageSaverItem item = {};
+            {
+                std::unique_lock<std::mutex> lock(m_mutex);
+                while (!m_finishable && m_imageSaverItems.empty())
+                    m_cond.wait(lock);
+
+                if (m_finishable && m_imageSaverItems.empty())
+                    return;
+
+                item = m_imageSaverItems.front();
+                m_imageSaverItems.pop_front();
+            }
+
+            saveImage(item.filePath, item.width, item.height, item.data.get(), item.config);
+        }
+    }
+
+    void enqueue(const ImageSaverItem &item) {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_imageSaverItems.push_back(item);
+        }
+        m_cond.notify_all();
+    }
+
+    void finish() {
+        m_finishable = true;
+        m_cond.notify_all();
+        if (m_thread.joinable())
+            m_thread.join();
+    }
+};
+
+ImageSaver g_imageSaverThread;
+
+void initImageSaverThread() {
+    g_imageSaverThread.init();
+}
+
+void enqueueSaveImage(
+    const std::filesystem::path &filePath,
+    cudau::Array &array,
+    const SDRImageSaverConfig &config) {
+    ImageSaverItem item = {};
+    item.filePath = filePath;
+    item.width = array.getWidth();
+    item.height = array.getHeight();
+    item.data = std::make_shared<float4[]>(item.width * item.height);
+    item.config = config;
+
+    auto data = array.map<float4>();
+    std::copy_n(data, item.width * item.height, item.data.get());
+    array.unmap();
+
+    g_imageSaverThread.enqueue(item);
+}
+
+void finishImageSaverThread() {
+    g_imageSaverThread.finish();
 }
 
 }

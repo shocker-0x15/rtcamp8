@@ -519,4 +519,15 @@ void saveImage(
     delete[] data;
 }
 
+
+
+void initImageSaverThread();
+
+void enqueueSaveImage(
+    const std::filesystem::path &filepath,
+    cudau::Array &array,
+    const SDRImageSaverConfig &config);
+
+void finishImageSaverThread();
+
 } // namespace rtc8

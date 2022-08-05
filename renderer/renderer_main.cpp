@@ -763,6 +763,14 @@ static int32_t runApp() {
 
     StopWatchHiRes cpuTimer;
 
+    SDRImageSaverConfig imageSaverConfig = {};
+    imageSaverConfig.alphaForOverride = 1.0f;
+    imageSaverConfig.applyToneMap = false;
+    imageSaverConfig.apply_sRGB_gammaCorrection = true;
+    imageSaverConfig.brightnessScale = 1.0f;
+    imageSaverConfig.flipY = false;
+    initImageSaverThread();
+
     uint32_t timeStepIndex = 0;
     while (true) {
         float timePoint =
@@ -803,20 +811,16 @@ static int32_t runApp() {
         CUDADRV_CHECK(cuStreamSynchronize(cuStream));
 
         cpuTimer.start();
-        SDRImageSaverConfig imageSaverConfig = {};
-        imageSaverConfig.alphaForOverride = 1.0f;
-        imageSaverConfig.applyToneMap = false;
-        imageSaverConfig.apply_sRGB_gammaCorrection = true;
-        imageSaverConfig.brightnessScale = 1.0f;
-        imageSaverConfig.flipY = false;
         char filename[256];
         sprintf_s(filename, "%03u.png", timeStepIndex);
-        saveImage(filename, cudaOutputBuffer, imageSaverConfig);
+        enqueueSaveImage(filename, cudaOutputBuffer, imageSaverConfig);
         uint64_t saveTime = cpuTimer.getElapsed(StopWatchDurationType::Milliseconds);
         hpprintf("Save %s: %.3f [s]\n", filename, saveTime * 1e-3f);
 
         ++timeStepIndex;
     }
+
+    finishImageSaverThread();
 
     return 0;
 }
