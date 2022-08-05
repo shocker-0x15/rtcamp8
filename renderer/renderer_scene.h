@@ -913,7 +913,7 @@ public:
         Point3D position = lerp(states[0].position, states[1].position, t);
         Quaternion ori0 = qLookAt(states[0].positionLookAt - states[0].position, states[0].up);
         Quaternion ori1 = qLookAt(states[1].positionLookAt - states[1].position, states[1].up);
-        Quaternion orientation = slerp(ori0, ori1, t);
+        Quaternion orientation = slerp(ori0, ori1, t, true);
         float fovY = lerp(states[0].fovY, states[1].fovY, t);
         deviceData->position = position;
         deviceData->orientation = conjugate(orientation)/* * qRotateY(pi_v<float>)*/;

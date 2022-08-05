@@ -874,6 +874,9 @@ struct Matrix3x3Template {
         return *this;
     }
 
+    CUDA_COMMON_FUNCTION constexpr RealType trace() const {
+        return m00 + m11 + m22;
+    }
     CUDA_COMMON_FUNCTION constexpr RealType determinant() const {
         return (c0[0] * (c1[1] * c2[2] - c2[1] * c1[2]) -
                 c1[0] * (c0[1] * c2[2] - c2[1] * c0[2]) +
@@ -2304,62 +2307,64 @@ CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType> qLoo
     const Vector3DTemplate<RealType> &dir, const Vector3DTemplate<RealType> &up) {
     using Quaternion = QuaternionTemplate<RealType>;
     using Vector3D = Vector3DTemplate<RealType>;
-    constexpr Vector3D defaultUpDir = Vector3D::Ey();
-    constexpr Vector3D defaultDir = -Vector3D::Ez();
-    Vector3D nDir = normalize(dir);
-    Vector3D nUp = up;
-    {
-        RealType d = dot(nDir, nUp);
-        nUp -= d * nDir;
-        nUp.normalize();
-    }
-
-    // First, obtain a quaternion to rotate the default direction to match the given direction;
-    RealType dotDToD = dot(defaultDir, nDir);
-    RealType angleDToD = std::acos(
-        clamp(dotDToD, static_cast<RealType>(-1), static_cast<RealType>(1)));
-    Vector3D axisDToD;
-    if (std::fabs(dotDToD) < 0.9999f) {
-        axisDToD = normalize(cross(defaultDir, nDir));
+    Vector3D nD = normalize(-dir);
+    Vector3D nS = normalize(cross(up, nD));
+    Vector3D nU = cross(nD, nS);
+    RealType trace = nS.x + nU.y + nD.z;
+    Quaternion ret;
+    if (trace > 0) {
+        RealType s = static_cast<RealType>(0.5) / std::sqrt(trace + 1);
+        ret.w = static_cast<RealType>(0.25) / s;
+        ret.x = (nU.z - nD.y) * s;
+        ret.y = (nD.x - nS.z) * s;
+        ret.z = (nS.y - nU.x) * s;
     }
     else {
-        Vector3D b;
-        defaultDir.makeCoordinateSystem(&axisDToD, &b);
+        if (nS.x > nU.y && nS.x > nD.z) {
+            RealType s = 2 * std::sqrt(1 + nS.x - nU.y - nD.z);
+            ret.w = (nU.z - nD.y) / s;
+            ret.x = static_cast<RealType>(0.25) * s;
+            ret.y = (nU.x + nS.y) / s;
+            ret.z = (nD.x + nS.z) / s;
+        }
+        else if (nU.y > nD.z) {
+            RealType s = 2 * std::sqrt(1 + nU.y - nS.x - nD.z);
+            ret.w = (nD.x - nS.z) / s;
+            ret.x = (nU.x + nS.y) / s;
+            ret.y = static_cast<RealType>(0.25) * s;
+            ret.z = (nD.y + nU.z) / s;
+        }
+        else {
+            RealType s = 2 * std::sqrt(1 + nD.z - nS.x - nU.y);
+            ret.w = (nS.y - nU.x) / s;
+            ret.x = (nD.x + nS.z) / s;
+            ret.y = (nD.y + nU.z) / s;
+            ret.z = static_cast<RealType>(0.25) * s;
+        }
     }
-    RealType sDToD, cDToD;
-    sincos(angleDToD / 2, &sDToD, &cDToD);
-    Quaternion qDToD(sDToD * axisDToD, cDToD);
 
-    // The above quaternion transforms the default up direction to some direction as well.
-    Vector3D intermUpDir = qDToD.toMatrix3x3() * defaultUpDir;
-
-    // Second, obtain a quaternion to rotate the intermediate up direction
-    // to match the given up direction.
-    RealType dotUToU = dot(intermUpDir, nUp);
-    RealType angleUToU = std::acos(
-        clamp(dotUToU, static_cast<RealType>(-1), static_cast<RealType>(1)));
-    Vector3D axisUToU = normalize(cross(intermUpDir, nUp)); // The same or the opposite of the given direction.
-    if (!axisUToU.allFinite())
-        axisUToU = nDir;
-    RealType sUToU, cUToU;
-    sincos(angleUToU / 2, &sUToU, &cUToU);
-    Quaternion qUToU(sUToU * axisUToU, cUToU);
-
-    Quaternion ret = conjugate(qUToU * qDToD);
+    // lookAt matrix is applied to objects instead of camera.
+    ret = conjugate(ret);
 
     return ret;
 }
 
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType> slerp(
-    const QuaternionTemplate<RealType> &qa, const QuaternionTemplate<RealType> &qb, RealType t) {
+    const QuaternionTemplate<RealType> &qa, const QuaternionTemplate<RealType> &qb, RealType t,
+    bool shorterPath = false) {
     RealType cosTheta = dot(qa, qb);
     if (cosTheta > static_cast<RealType>(0.9995))
         return normalize((1 - t) * qa + t * qb);
     else {
+        QuaternionTemplate<RealType> qbs = qb;
+        if (shorterPath && cosTheta < 0) {
+            qbs = -qb;
+            cosTheta = -cosTheta;
+        }
         RealType theta = std::acos(clamp(cosTheta, static_cast<RealType>(-1), static_cast<RealType>(1)));
         RealType thetap = theta * t;
-        QuaternionTemplate<RealType> qPerp = normalize(qb - qa * cosTheta);
+        QuaternionTemplate<RealType> qPerp = normalize(qbs - qa * cosTheta);
         RealType sinThetaP, cosThetaP;
         sincos(thetap, &sinThetaP, &cosThetaP);
         return qa * cosThetaP + qPerp * sinThetaP;
