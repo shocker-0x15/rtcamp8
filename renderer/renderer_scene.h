@@ -268,6 +268,8 @@ public:
 
 
 
+    BoundingBox3D computeSceneAABB(float timePoint) const;
+
     shared::SurfaceMaterial* getSurfaceMaterialsOnDevice() const {
         return m_surfaceMaterialBuffer.getDevicePointer();
     }
@@ -808,6 +810,32 @@ class Instance {
     uint32_t m_hasCyclicAnim : 1;
     uint32_t m_dirty : 1;
 
+    void interpolateStates(
+        float timePoint,
+        Point3D* position, Quaternion* orientation, float* scale) const {
+        if (m_hasCyclicAnim) {
+            float timeBegin = m_keyStates.front().timePoint;
+            float timeEnd = m_keyStates.back().timePoint;
+            timePoint = std::fmodf(timePoint - timeBegin, timeEnd - timeBegin) + timeBegin;
+        }
+        uint32_t numStates = static_cast<uint32_t>(m_keyStates.size());
+        int idx = 0;
+        for (int d = nextPowerOf2(numStates) >> 1; d >= 1; d >>= 1) {
+            if (idx + d >= numStates)
+                continue;
+            const KeyInstanceState &keyState = m_keyStates[idx + d];
+            if (keyState.timePoint <= timePoint)
+                idx += d;
+        }
+        KeyInstanceState states[2];
+        states[0] = m_keyStates[idx];
+        states[1] = m_keyStates[std::min(static_cast<uint32_t>(idx) + 1, numStates - 1)];
+        float t = safeDivide(timePoint - states[0].timePoint, states[1].timePoint - states[0].timePoint);
+        *scale = lerp(states[0].scale, states[1].scale, t);
+        *orientation = slerp(states[0].orientation, states[1].orientation, t);
+        *position = lerp(states[0].position, states[1].position, t);
+    }
+
 public:
     Instance() :
         m_slot(0xFFFFFFFF), m_lastTimePoint(NAN), m_hasCyclicAnim(false), m_dirty(false) {}
@@ -831,29 +859,25 @@ public:
         m_dirty = true;
     }
 
+    BoundingBox3D computeAABB(float timePoint) {
+        Point3D position;
+        Quaternion orientation;
+        float scale;
+        interpolateStates(timePoint, &position, &orientation, &scale);
+        Matrix4x4 transform =
+            translate4x4(position) * orientation.toMatrix4x4() * scale4x4(scale) *
+            m_staticTransform;
+        BoundingBox3D geomGroupAABB = m_geomGroup->getAABB();
+        BoundingBox3D ret = transform * geomGroupAABB;
+        return ret;
+    }
+
     bool setUpDeviceData(shared::Instance* deviceData, float timePoint) {
         *deviceData = {};
-        if (m_hasCyclicAnim) {
-            float timeBegin = m_keyStates.front().timePoint;
-            float timeEnd = m_keyStates.back().timePoint;
-            timePoint = std::fmodf(timePoint - timeBegin, timeEnd - timeBegin) + timeBegin;
-        }
-        uint32_t numStates = static_cast<uint32_t>(m_keyStates.size());
-        int idx = 0;
-        for (int d = nextPowerOf2(numStates) >> 1; d >= 1; d >>= 1) {
-            if (idx + d >= numStates)
-                continue;
-            const KeyInstanceState &keyState = m_keyStates[idx + d];
-            if (keyState.timePoint <= timePoint)
-                idx += d;
-        }
-        KeyInstanceState states[2];
-        states[0] = m_keyStates[idx];
-        states[1] = m_keyStates[std::min(static_cast<uint32_t>(idx) + 1, numStates - 1)];
-        float t = safeDivide(timePoint - states[0].timePoint, states[1].timePoint - states[0].timePoint);
-        float scale = lerp(states[0].scale, states[1].scale, t);
-        Quaternion orientation = slerp(states[0].orientation, states[1].orientation, t);
-        Point3D position = lerp(states[0].position, states[1].position, t);
+        Point3D position;
+        Quaternion orientation;
+        float scale;
+        interpolateStates(timePoint, &position, &orientation, &scale);
         Matrix4x4 transform =
             translate4x4(position) * orientation.toMatrix4x4() * scale4x4(scale) *
             m_staticTransform;

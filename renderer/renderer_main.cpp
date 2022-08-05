@@ -13,6 +13,53 @@
 
 
 
+namespace ImGui {
+    bool SliderInputFloat(
+        const char* label, float* v,
+        float v_min, float v_max,
+        float step, float step_fast,
+        const char* format = "%.3f",
+        ImGuiSliderFlags flags = 0) {
+        ImGuiIO &io = GetIO();
+        ImGuiStyle &style = GetStyle();
+
+        BeginGroup();
+        PushID(label);
+
+        const float buttonSize = ImGui::GetFrameHeight();
+        const float innerSpacing = style.ItemInnerSpacing.x;
+
+        SetNextItemWidth(CalcItemWidth() - 2 * (buttonSize + innerSpacing));
+        bool valueChanged = false;
+        valueChanged |= SliderFloat("", v, v_min, v_max, format, flags);
+
+        PushButtonRepeat(true);
+        SameLine(0, innerSpacing);
+        if (Button("-", ImVec2(buttonSize, buttonSize))) {
+            *v -= (io.KeyCtrl && step_fast > 0) ? step_fast : step;
+            *v = std::min(std::max(*v, v_min), v_max);
+            valueChanged = true;
+        }
+        SameLine(0, innerSpacing);
+        if (Button("+", ImVec2(buttonSize, buttonSize))) {
+            *v += (io.KeyCtrl && step_fast > 0) ? step_fast : step;
+            *v = std::min(std::max(*v, v_min), v_max);
+            valueChanged = true;
+        }
+        PopButtonRepeat();
+
+        SameLine(0, innerSpacing);
+        Text(label);
+
+        PopID();
+        EndGroup();
+
+        return valueChanged;
+    }
+}
+
+
+
 namespace rtc8 {
 
 static cudau::Array rngBuffer;
@@ -187,7 +234,7 @@ static float g_cameraDirectionalMovingSpeed;
 static float g_cameraTiltSpeed;
 static Quaternion g_cameraOrientation;
 static Quaternion g_tempCameraOrientation;
-static float3 g_cameraPosition;
+static Point3D g_cameraPosition;
 
 static bool g_guiMode = true;
 static std::filesystem::path g_sceneFilePath;
@@ -434,11 +481,11 @@ static int32_t runGuiApp() {
 
 
 
+    BoundingBox3D initialSceneAABB = g_scene.computeSceneAABB(renderConfigs.timeBegin);
+
     setUpPipelineLaunchParameters(renderTargetSizeX, renderTargetSizeY);
 
 
-
-    shared::PerspectiveCamera cameras[2];
 
     uint64_t frameIndex = 0;
     glfwSetWindowUserPointer(window, &frameIndex);
@@ -449,6 +496,14 @@ static int32_t runGuiApp() {
     {
         const ActiveCameraInfo &activeCamInfo = renderConfigs.activeCameraInfos[0];
         activeCamera = renderConfigs.cameras.at(activeCamInfo.name);
+        activeCamera->setUpDeviceData(&perFramePlpOnHost.camera, timePoint);
+        g_cameraPosition = perFramePlpOnHost.camera.position;
+        g_cameraOrientation = perFramePlpOnHost.camera.orientation;
+        g_tempCameraOrientation = g_cameraOrientation;
+        Vector3D sceneDim = initialSceneAABB.maxP - initialSceneAABB.minP;
+        g_cameraPositionalMovingSpeed = 0.003f * std::max({ sceneDim.x, sceneDim.y, sceneDim.z });
+        g_cameraDirectionalMovingSpeed = 0.0015f;
+        g_cameraTiltSpeed = 0.025f;
     }
 
     g_scene.setUpDeviceDataBuffers(cuStreams[0], timePoint);
@@ -489,8 +544,6 @@ static int32_t runGuiApp() {
         CUstream &curCuStream = cuStreams[curBufIdx];
         //CUstream &prevCuStream = cuStreams[prevBufIdx];
         CUstream &prevCuStream = cuStreams[curBufIdx];
-        shared::PerspectiveCamera curCamera = cameras[curBufIdx];
-        shared::PerspectiveCamera prevCamera = cameras[prevBufIdx];
         GPUTimer &curGpuTimer = gpuTimers[curBufIdx];
 
         if (glfwWindowShouldClose(window))
@@ -524,6 +577,84 @@ static int32_t runGuiApp() {
             resized = true;
         }
 
+        bool operatingCamera;
+        bool cameraIsActuallyMoving;
+        static bool operatedCameraOnPrevFrame = false;
+        {
+            const auto decideDirection = [](const KeyState& a, const KeyState& b) {
+                int32_t dir = 0;
+                if (a.getState() == true) {
+                    if (b.getState() == true)
+                        dir = 0;
+                    else
+                        dir = 1;
+                }
+                else {
+                    if (b.getState() == true)
+                        dir = -1;
+                    else
+                        dir = 0;
+                }
+                return dir;
+            };
+
+            int32_t trackZ = -decideDirection(g_keyForward, g_keyBackward);
+            int32_t trackX = -decideDirection(g_keyLeftward, g_keyRightward);
+            int32_t trackY = decideDirection(g_keyUpward, g_keyDownward);
+            int32_t tiltZ = decideDirection(g_keyTiltRight, g_keyTiltLeft);
+            int32_t adjustPosMoveSpeed = decideDirection(g_keyFasterPosMovSpeed, g_keySlowerPosMovSpeed);
+
+            g_cameraPositionalMovingSpeed *= 1.0f + 0.02f * adjustPosMoveSpeed;
+            g_cameraPositionalMovingSpeed = std::clamp(g_cameraPositionalMovingSpeed, 1e-6f, 1e+6f);
+
+            static double deltaX = 0, deltaY = 0;
+            static double lastX, lastY;
+            static double g_prevMouseX = g_mouseX, g_prevMouseY = g_mouseY;
+            if (g_buttonRotate.getState() == true) {
+                if (g_buttonRotate.getTime() == frameIndex) {
+                    lastX = g_mouseX;
+                    lastY = g_mouseY;
+                }
+                else {
+                    deltaX = g_mouseX - lastX;
+                    deltaY = g_mouseY - lastY;
+                }
+            }
+
+            float deltaAngle = std::sqrt(deltaX * deltaX + deltaY * deltaY);
+            Vector3D axis(deltaY, deltaX, 0);
+            axis /= deltaAngle;
+            if (deltaAngle == 0.0f)
+                axis = Vector3D(1, 0, 0);
+
+            g_cameraOrientation = g_cameraOrientation * qRotateZ(g_cameraTiltSpeed * -tiltZ);
+            g_tempCameraOrientation =
+                g_cameraOrientation *
+                qRotate(g_cameraDirectionalMovingSpeed * -deltaAngle, axis);
+            g_cameraPosition +=
+                g_tempCameraOrientation.toMatrix3x3() *
+                (g_cameraPositionalMovingSpeed * Vector3D(trackX, trackY, trackZ));
+            if (g_buttonRotate.getState() == false && g_buttonRotate.getTime() == frameIndex) {
+                g_cameraOrientation = g_tempCameraOrientation;
+                deltaX = 0;
+                deltaY = 0;
+            }
+
+            operatingCamera =
+                (g_keyForward.getState() || g_keyBackward.getState() ||
+                 g_keyLeftward.getState() || g_keyRightward.getState() ||
+                 g_keyUpward.getState() || g_keyDownward.getState() ||
+                 g_keyTiltLeft.getState() || g_keyTiltRight.getState() ||
+                 g_buttonRotate.getState());
+            cameraIsActuallyMoving =
+                (trackZ != 0 || trackX != 0 || trackY != 0 ||
+                 tiltZ != 0 || (g_mouseX != g_prevMouseX) || (g_mouseY != g_prevMouseY))
+                && operatingCamera;
+
+            g_prevMouseX = g_mouseX;
+            g_prevMouseY = g_mouseY;
+        }
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -536,8 +667,16 @@ static int32_t runGuiApp() {
             ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
             ImGui::Text("Time Range: %f - %f [s]", renderConfigs.timeBegin, renderConfigs.timeEnd);
-            timeChanged = ImGui::InputFloat("Cur. Time", &timePoint, 1.0f / renderConfigs.fps);
-            timePoint = clamp(timePoint, renderConfigs.timeBegin, renderConfigs.timeEnd);
+            //timeChanged = ImGui::InputFloat("Cur. Time", &timePoint, 1.0f / renderConfigs.fps);
+            //timePoint = clamp(timePoint, renderConfigs.timeBegin, renderConfigs.timeEnd);
+            timeChanged = ImGui::SliderInputFloat(
+                "Cur. Time", &timePoint,
+                renderConfigs.timeBegin, renderConfigs.timeEnd,
+                static_cast<float>(1) / renderConfigs.fps, 0.0f);
+
+            ImGui::InputFloat3("Cam. Pos.", reinterpret_cast<float*>(&g_cameraPosition));
+            ImGui::InputFloat4("Cam. Ori.", reinterpret_cast<float*>(&g_tempCameraOrientation));
+            ImGui::Text("Cam. Pos. Speed (T/G): %g", g_cameraPositionalMovingSpeed);
 
             ImGui::End();
         }
@@ -579,7 +718,7 @@ static int32_t runGuiApp() {
         //     firstAccumFrame: 純粋なサンプルサイズ増加の開始。
         bool newSequence = resized || frameIndex == 0/* || resetAccumulation*/;
         bool firstAccumFrame =
-            /*animate || !enableAccumulation || cameraIsActuallyMoving || */newSequence || timeChanged;
+            /*animate || !enableAccumulation ||  */cameraIsActuallyMoving || newSequence || timeChanged;
         if (firstAccumFrame)
             numAccumFrames = 0;
         else
@@ -587,9 +726,20 @@ static int32_t runGuiApp() {
         if (newSequence)
             hpprintf("New sequence started.\n");
 
-        if (!enableFreeCamera) {
+        if (operatingCamera)
+            enableFreeCamera = true;
+        if (timeChanged)
+            enableFreeCamera = false;
+        if (enableFreeCamera) {
+            perFramePlpOnHost.camera.position = g_cameraPosition;
+            perFramePlpOnHost.camera.orientation = g_tempCameraOrientation;
+        }
+        else {
             perFramePlpOnHost.camera.aspect = static_cast<float>(renderTargetSizeX) / renderTargetSizeY;
             activeCamera->setUpDeviceData(&perFramePlpOnHost.camera, timePoint);
+            g_cameraPosition = perFramePlpOnHost.camera.position;
+            g_cameraOrientation = perFramePlpOnHost.camera.orientation;
+            g_tempCameraOrientation = g_cameraOrientation;
         }
 
         perFramePlpOnHost.instances = g_scene.getInstancesOnDevice();

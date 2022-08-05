@@ -2289,17 +2289,17 @@ CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType> qRot
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType> qRotateX(
     RealType angle) {
-    return qRotate(angle, Vector3DTemplate<RealType>::Ex);
+    return qRotate(angle, Vector3DTemplate<RealType>::Ex());
 }
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType> qRotateY(
     RealType angle) {
-    return qRotate(angle, Vector3DTemplate<RealType>::Ey);
+    return qRotate(angle, Vector3DTemplate<RealType>::Ey());
 }
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ QuaternionTemplate<RealType> qRotateZ(
     RealType angle) {
-    return qRotate(angle, Vector3DTemplate<RealType>::Ez);
+    return qRotate(angle, Vector3DTemplate<RealType>::Ez());
 }
 
 template <typename RealType>

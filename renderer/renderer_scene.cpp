@@ -56,6 +56,16 @@ void Scene::allocateInstance(const Ref<Instance> &inst) {
     m_optixIas.addChild(optixInst);
 }
 
+BoundingBox3D Scene::computeSceneAABB(float timePoint) const {
+    BoundingBox3D sceneAABB;
+    for (const auto &it : m_instanceSlotOwners) {
+        const Ref<Instance> &inst = it.second;
+        BoundingBox3D instAABB = inst->computeAABB(timePoint);
+        sceneAABB.unify(instAABB);
+    }
+    return sceneAABB;
+}
+
 void Scene::setUpDeviceDataBuffers(CUstream stream, float timePoint) {
     size_t hitGroupSbtSize;
     m_optixScene.generateShaderBindingTableLayout(&hitGroupSbtSize);
