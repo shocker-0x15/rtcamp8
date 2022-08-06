@@ -78,7 +78,7 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void computeSurfacePoint(
     const GeometryGroup &geomGroup = plp.s->geometryGroups[inst.geomGroupSlot];
 
     float lightProb = 1.0f;
-    if (plp.f->envLight.enabled)
+    if (plp.f->enableEnvironmentalLight)
         lightProb *= (1 - probToSampleEnvLight);
     float geomGroupImportance = geomGroup.lightGeomInstDist.integral();
     float instImportance = pow2(inst.uniformScale) * geomGroupImportance;
@@ -114,14 +114,12 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void sampleLight(
     bool sampleEnvLight, float ul, float u0, float u1,
     shared::LightSample* lightSample, float* areaPDensity) {
     if (sampleEnvLight) {
-        float phi, theta;
+        Vector3D dir;
         float dirPDensity;
-        RGBSpectrum radiance = plp.f->envLight.sample(u0, u1, &phi, &theta, &dirPDensity);
-        float posPhi = phi - plp.f->envLightRotation;
-        posPhi = posPhi - floorf(posPhi / (2 * pi_v<float>)) * 2 * pi_v<float>;
+        RGBSpectrum radiance = plp.f->envLight.sample(u0, u1, &dir, &dirPDensity);
 
-        lightSample->emittance = pi_v<float> * plp.f->envLightPowerCoeff;
-        lightSample->position = static_cast<Point3D>(Vector3D::fromPolarYUp(posPhi, theta));
+        lightSample->emittance = pi_v<float> * radiance;
+        lightSample->position = static_cast<Point3D>(dir);
         lightSample->normal = -Normal3D(lightSample->position);
         lightSample->atInfinity = true;
         *areaPDensity = dirPDensity;
@@ -284,7 +282,7 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
     float uLight = rng.getFloat0cTo1o();
     bool selectEnvLight = false;
     float probToSampleCurLightType = 1.0f;
-    if (plp.f->envLight.enabled) {
+    if (plp.f->enableEnvironmentalLight) {
         if (plp.f->lightInstDist.integral() > 0.0f) {
             if (uLight < probToSampleEnvLight) {
                 probToSampleCurLightType = probToSampleEnvLight;
@@ -322,7 +320,7 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
     float dist2 = 1.0f;
     float traceLength = 1.0f;
     if (lightSample.atInfinity) {
-        traceLength = 2 * plp.f->worldRadius;
+        traceLength = 2 * plp.f->worldDimInfo.radius;
         lightPoint = surfPt.position + traceLength * -shadowRayDir;
     }
     else {
@@ -402,8 +400,22 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
             PathTracingRayType::Closest, maxNumRayTypes, PathTracingRayType::Closest,
             instSlot, geomInstSlot, primIndex, b1, b2);
 
-        if (instSlot == 0xFFFFFFFF)
+        if (instSlot == 0xFFFFFFFF) {
+            if (plp.f->enableEnvironmentalLight) {
+                float hypAreaPDensity;
+                RGBSpectrum radiance = plp.f->envLight.evaluate(rayDirection, &hypAreaPDensity);
+                float misWeight = 1.0f;
+                if (pathLength > 1) {
+                    float lightPDensity =
+                        (plp.f->lightInstDist.integral() > 0.0f ? probToSampleEnvLight : 1.0f) *
+                        hypAreaPDensity;
+                    float bsdfPDensity = dirPDensity;
+                    misWeight = pow2(bsdfPDensity) / (pow2(bsdfPDensity) + pow2(lightPDensity));
+                }
+                contribution += throughput * radiance * misWeight;
+            }
             break;
+        }
 
         const Instance &inst = plp.f->instances[instSlot];
         const GeometryInstance &geomInst = plp.s->geometryInstances[geomInstSlot];

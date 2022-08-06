@@ -277,7 +277,7 @@ class RegularConstantContinuousDistribution1DTemplate;
 
 template <typename RealType>
 class RegularConstantContinuousDistribution1DTemplate<RealType, false> {
-    cudau::TypedBuffer<RealType> m_PDF;
+    cudau::TypedBuffer<RealType> m_weights;
     cudau::TypedBuffer<RealType> m_CDF;
     RealType m_integral;
     uint32_t m_numValues;
@@ -293,15 +293,15 @@ public:
     void finalize(CUcontext cuContext) {
         if (!m_isInitialized)
             return;
-        if (m_CDF.isInitialized() && m_PDF.isInitialized()) {
+        if (m_CDF.isInitialized() && m_weights.isInitialized()) {
             m_CDF.finalize();
-            m_PDF.finalize();
+            m_weights.finalize();
         }
     }
 
     RegularConstantContinuousDistribution1DTemplate &operator=(
         RegularConstantContinuousDistribution1DTemplate &&v) {
-        m_PDF = std::move(v.m_PDF);
+        m_weights = std::move(v.m_weights);
         m_CDF = std::move(v.m_CDF);
         m_integral = v.m_integral;
         m_numValues = v.m_numValues;
@@ -321,7 +321,7 @@ public:
 
     void getDeviceType(DeviceType* instance) const {
         new (instance) DeviceType(
-            m_PDF.getDevicePointer(), m_CDF.getDevicePointer(), m_integral, m_numValues);
+            m_weights.getDevicePointer(), m_CDF.getDevicePointer(), m_integral, m_numValues);
     }
 };
 
@@ -405,7 +405,40 @@ public:
         return *this;
     }
 
-    void initialize(CUcontext cuContext, cudau::BufferType type, const RealType* values, size_t numD1, size_t numD2);
+    void initialize(
+        CUcontext cuContext, cudau::BufferType type,
+        const RealType* values, size_t numD1, size_t numD2) {
+        Assert(!m_isInitialized, "Already initialized!");
+        m_1DDists = new _1DType[numD2];
+        m_raw1DDists.initialize(cuContext, type, static_cast<uint32_t>(numD2));
+
+        if (values) {
+            _1DDeviceType* rawDists = m_raw1DDists.map();
+
+            // JP: まず各行に関するDistribution1Dを作成する。
+            // EN: First, create Distribution1D's for every rows.
+            CompensatedSum<RealType> sum(0);
+            RealType* integrals = new RealType[numD2];
+            for (uint32_t i = 0; i < numD2; ++i) {
+                _1DType &dist = m_1DDists[i];
+                dist.initialize(cuContext, type, values + i * numD1, numD1);
+                dist.getDeviceType(&rawDists[i]);
+                integrals[i] = dist.getIntegral();
+                sum += integrals[i];
+            }
+
+            // JP: 各行の積分値を用いてDistribution1Dを作成する。
+            // EN: create a Distribution1D using integral values of each row.
+            m_top1DDist.initialize(cuContext, type, integrals, numD2);
+            delete[] integrals;
+
+            Assert(std::isfinite(m_top1DDist.getIntegral()), "invalid integral value.");
+
+            m_raw1DDists.unmap();
+
+            m_isInitialized = true;
+        }
+    }
     void finalize(CUcontext cuContext) {
         if (!m_isInitialized)
             return;

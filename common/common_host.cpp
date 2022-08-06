@@ -559,27 +559,34 @@ void RegularConstantContinuousDistribution1DTemplate<RealType, false>::
 initialize(CUcontext cuContext, cudau::BufferType type, const RealType* values, size_t numValues) {
     Assert(!m_isInitialized, "Already initialized!");
     m_numValues = static_cast<uint32_t>(numValues);
-    m_PDF.initialize(cuContext, type, m_numValues);
-    m_CDF.initialize(cuContext, type, m_numValues + 1);
+    if (m_numValues == 0) {
+        m_integral = 0.0f;
+        return;
+    }
 
-    RealType* PDF = m_PDF.map();
+    m_weights.initialize(cuContext, type, m_numValues);
+    m_CDF.initialize(cuContext, type, m_numValues);
+
+    if (values == nullptr) {
+        m_integral = 0.0f;
+        m_isInitialized = true;
+        return;
+    }
+
+    RealType* weights = m_weights.map();
+    std::memcpy(weights, values, sizeof(RealType) * m_numValues);
+    m_weights.unmap();
+
     RealType* CDF = m_CDF.map();
-    std::memcpy(PDF, values, sizeof(RealType) * m_numValues);
 
-    CompensatedSum<RealType> sum{ 0 };
+    CompensatedSum<RealType> sum(0);
     for (uint32_t i = 0; i < m_numValues; ++i) {
         CDF[i] = sum;
-        sum += PDF[i] / m_numValues;
+        sum += weights[i];
     }
-    m_integral = sum;
-    for (uint32_t i = 0; i < m_numValues; ++i) {
-        PDF[i] /= m_integral;
-        CDF[i] /= m_integral;
-    }
-    CDF[m_numValues] = 1.0f;
+    m_integral = sum / m_numValues;
 
     m_CDF.unmap();
-    m_PDF.unmap();
 
     m_isInitialized = true;
 }
@@ -589,9 +596,20 @@ void RegularConstantContinuousDistribution1DTemplate<RealType, true>::
 initialize(CUcontext cuContext, cudau::BufferType type, const RealType* values, size_t numValues) {
     Assert(!m_isInitialized, "Already initialized!");
     m_numValues = static_cast<uint32_t>(numValues);
+    if (m_numValues == 0) {
+        m_integral = 0.0f;
+        return;
+    }
+
     m_PDF.initialize(cuContext, type, m_numValues);
     m_aliasTable.initialize(cuContext, type, m_numValues);
     m_valueMaps.initialize(cuContext, type, m_numValues);
+
+    if (values == nullptr) {
+        m_integral = 0.0f;
+        m_isInitialized = true;
+        return;
+    }
 
     RealType* PDF = m_PDF.map();
     std::memcpy(PDF, values, sizeof(RealType) * m_numValues);
@@ -674,6 +692,11 @@ initialize(CUcontext cuContext, cudau::BufferType type, const RealType* values, 
 
 template class RegularConstantContinuousDistribution1DTemplate<float, false>;
 template class RegularConstantContinuousDistribution1DTemplate<float, true>;
+
+
+
+template class RegularConstantContinuousDistribution2DTemplate<float, false>;
+template class RegularConstantContinuousDistribution2DTemplate<float, true>;
 
 
 

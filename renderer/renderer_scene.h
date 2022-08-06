@@ -30,10 +30,15 @@ struct GPUEnvironment {
 
     struct ComputeLightProbs {
         CUmodule cudaModule;
+        cudau::Kernel initializeWorldDimInfo;
+        cudau::Kernel finalizeWorldDimInfo;
         cudau::Kernel computeTriangleProbBuffer;
         cudau::Kernel computeGeomInstProbBuffer;
         cudau::Kernel computeInstProbBuffer;
         cudau::Kernel finalizeDiscreteDistribution1D;
+        cudau::Kernel computeFirstMipOfEnvIBLImportanceMap;
+        cudau::Kernel computeMipOfImportanceMap;
+        cudau::Kernel testImportanceMap;
     } computeLightProbs;
 
     cudau::TypedBuffer<shared::BSDFProcedureSet> bsdfProcedureSetBuffer;
@@ -80,6 +85,10 @@ struct GPUEnvironment {
         CUDADRV_CHECK(cuModuleLoad(
             &computeLightProbs.cudaModule,
             (exeDir / "renderer/ptxes/compute_light_probs.ptx").string().c_str()));
+        computeLightProbs.initializeWorldDimInfo.set(
+            computeLightProbs.cudaModule, "initializeWorldDimInfo", cudau::dim3(32), 0);
+        computeLightProbs.finalizeWorldDimInfo.set(
+            computeLightProbs.cudaModule, "finalizeWorldDimInfo", cudau::dim3(32), 0);
         computeLightProbs.computeTriangleProbBuffer.set(
             computeLightProbs.cudaModule, "computeTriangleProbBuffer", cudau::dim3(32), 0);
         computeLightProbs.computeGeomInstProbBuffer.set(
@@ -88,6 +97,12 @@ struct GPUEnvironment {
             computeLightProbs.cudaModule, "computeInstProbBuffer", cudau::dim3(32), 0);
         computeLightProbs.finalizeDiscreteDistribution1D.set(
             computeLightProbs.cudaModule, "finalizeDiscreteDistribution1D", cudau::dim3(32), 0);
+        computeLightProbs.computeFirstMipOfEnvIBLImportanceMap.set(
+            computeLightProbs.cudaModule, "computeFirstMipOfEnvIBLImportanceMap", cudau::dim3(32), 0);
+        computeLightProbs.computeMipOfImportanceMap.set(
+            computeLightProbs.cudaModule, "computeMipOfImportanceMap", cudau::dim3(32), 0);
+        computeLightProbs.testImportanceMap.set(
+            computeLightProbs.cudaModule, "testImportanceMap", cudau::dim3(32), 0);
 
 
 
@@ -299,7 +314,8 @@ public:
     
     void setUpLightGeomDistributions(CUstream stream);
     void checkLightGeomDistributions();
-    void setUpLightInstDistribution(CUstream stream, CUdeviceptr lightInstDistAddr);
+    void setUpLightInstDistribution(
+        CUstream stream, CUdeviceptr worldDimInfoAddr, CUdeviceptr lightInstDistAddr);
     void checkLightInstDistribution(CUdeviceptr lightInstDistAddr);
 };
 
@@ -331,6 +347,17 @@ public:
         m_dirty = true;
     }
 
+    uint32_t getWidth() const {
+        return m_texArray->getWidth();
+    }
+    uint32_t getHeight() const {
+        return m_texArray->getHeight();
+    }
+
+    Ref<cudau::Array> getCudaArray() const {
+        return m_texArray;
+    }
+
     CUtexObject getDeviceTexture() {
         if (m_dirty) {
             if (m_texObject)
@@ -353,6 +380,10 @@ public:
         dimInfo.isBCTexture = m_texArray->isBCTexture();
         dimInfo.isLeftHanded = false;
         return dimInfo;
+    }
+
+    CUsurfObject getSurfaceObject(uint32_t mipmapLevel) {
+        return m_texArray->getSurfaceObject(mipmapLevel);
     }
 };
 
@@ -620,6 +651,7 @@ public:
             deviceData->readModifiedNormal = CallableProgram_readModifiedNormalFromNormalMap2ch;
         else
             deviceData->readModifiedNormal = CallableProgram_readModifiedNormalFromHeightMap;
+        deviceData->aabb = m_aabb;
         deviceData->surfMatSlot = m_surfMat->getSlot();
 
         m_dirty = false;
@@ -747,6 +779,7 @@ public:
         *deviceData = {};
         deviceData->geomInstSlots = m_geomInstSlotBuffer.getDevicePointer();
         m_lightGeomInstDist.getDeviceType(&deviceData->lightGeomInstDist);
+        deviceData->aabb = m_aabb;
 
         m_dirty = false;
         return true;
@@ -947,6 +980,202 @@ public:
 
 
 
+class Environment {
+protected:
+    float m_coeff;
+    float m_rotation;
+    uint32_t m_dirty : 1;
+
+public:
+    Environment(float coeff, float rotation) :
+        m_coeff(coeff), m_rotation(rotation), m_dirty(false) {}
+    virtual ~Environment() {}
+
+    virtual void setUpDeviceData(shared::EnvironmentalLight* deviceData, float timePoint) = 0;
+
+    virtual void computeDistribution(
+        CUstream stream, CUdeviceptr envLightAddr, float /*timePoint*/) = 0;
+};
+
+
+
+class ImageBasedEnvironment : public Environment {
+    Ref<Texture2D> m_image;
+    Ref<Texture2D> m_importanceMap;
+
+public:
+    ImageBasedEnvironment(float coeff, float rotation, const Ref<Texture2D> &image) :
+        Environment(coeff, rotation), m_image(image) {
+        uint32_t width = m_image->getWidth();
+        uint32_t height = m_image->getHeight();
+        uint32_t dimX = nextPowerOf2(width);
+        uint32_t dimY = std::max(nextPowerOf2(height), dimX >> 1);
+        uint32_t numMipLevels = nextPowOf2Exponent(dimX) + 1;
+        auto mapArray = std::make_shared<cudau::Array>();
+        mapArray->initialize2D(
+            g_gpuEnv.cuContext, cudau::ArrayElementType::Float32, 1,
+            cudau::ArraySurface::Enable, cudau::ArrayTextureGather::Disable,
+            dimX, dimY, numMipLevels);
+        m_importanceMap = std::make_shared<Texture2D>(mapArray);
+        m_importanceMap->setReadMode(cudau::TextureReadMode::ElementType);
+
+        m_dirty = true;
+    }
+
+    void setUpDeviceData(shared::EnvironmentalLight* deviceData, float /*timePoint*/) override {
+        if (!m_dirty)
+            return;
+
+        auto &body = *reinterpret_cast<shared::ImageBasedEnvironmentalLight*>(deviceData->body);
+        body.texObj = m_image->getDeviceTexture();
+        body.importanceMap.setTexObject(
+            m_importanceMap->getDeviceTexture(),
+            uint2(m_importanceMap->getWidth(), m_importanceMap->getHeight()));
+        body.imageWidth = m_image->getWidth();
+        body.imageHeight = m_image->getHeight();
+        deviceData->envLightSample = CallableProgram_ImageBasedEnvironmentalLight_sample;
+        deviceData->envLightEvaluate = CallableProgram_ImageBasedEnvironmentalLight_evaluate;
+        deviceData->powerCoeff = m_coeff;
+        deviceData->rotation = m_rotation;
+
+        m_dirty = false;
+    }
+
+    void computeDistribution(
+        CUstream stream, CUdeviceptr envLightAddr, float /*timePoint*/) override {
+        uint32_t width = m_image->getWidth();
+        uint32_t height = m_image->getHeight();
+        uint32_t dimX = nextPowerOf2(width);
+        uint32_t dimY = std::max(nextPowerOf2(height), dimX >> 1);
+        uint2 curDims = uint2(dimX, dimY);
+        uint32_t numMipLevels = nextPowOf2Exponent(curDims.x) + 1;
+
+        constexpr bool debugMap = false;
+        CUdeviceptr impMapAddr = envLightAddr + offsetof(shared::ImageBasedEnvironmentalLight, importanceMap);
+
+        g_gpuEnv.computeLightProbs.computeFirstMipOfEnvIBLImportanceMap.launchWithThreadDim(
+            stream, cudau::dim3(curDims.x, curDims.y),
+            m_image->getDeviceTexture(), uint2(width, height),
+            impMapAddr, m_importanceMap->getSurfaceObject(0));
+        if constexpr (debugMap) {
+            CUDADRV_CHECK(cuStreamSynchronize(stream));
+            Ref<cudau::Array> cudaArray = m_importanceMap->getCudaArray();
+            float* data = cudaArray->map<float>();
+            auto image = new float4[curDims.x * curDims.y];
+            CompensatedSum<float> sum(0);
+            for (int y = 0; y < curDims.y; ++y) {
+                for (int x = 0; x < curDims.x; ++x) {
+                    uint32_t idx = y * curDims.x + x;
+                    float value = data[idx];
+                    image[idx] = float4(value, value, value, 1.0f);
+                    sum += value;
+                }
+            }
+            SDRImageSaverConfig config = {};
+            config.alphaForOverride = 1.0f;
+            config.applyToneMap = true;
+            config.apply_sRGB_gammaCorrection = false;
+            config.brightnessScale = 1.0f;
+            config.flipY = false;
+            saveImage("vis00.png", curDims.x, curDims.y, image, config);
+            delete[] image;
+            cudaArray->unmap();
+        }
+
+        for (uint32_t mipLevel = 1; mipLevel < numMipLevels; ++mipLevel) {
+            curDims = (curDims + uint2(1, 1)) / 2;
+            g_gpuEnv.computeLightProbs.computeMipOfImportanceMap.launchWithThreadDim(
+                stream, cudau::dim3(curDims.x, curDims.y),
+                impMapAddr, mipLevel,
+                m_importanceMap->getSurfaceObject(mipLevel - 1),
+                m_importanceMap->getSurfaceObject(mipLevel));
+            if constexpr (debugMap) {
+                CUDADRV_CHECK(cuStreamSynchronize(stream));
+                Ref<cudau::Array> cudaArray = m_importanceMap->getCudaArray();
+                float* data = cudaArray->map<float>(mipLevel);
+                auto image = new float4[curDims.x * curDims.y];
+                for (int y = 0; y < curDims.y; ++y) {
+                    for (int x = 0; x < curDims.x; ++x) {
+                        uint32_t idx = y * curDims.x + x;
+                        float value = data[idx];
+                        image[idx] = float4(value, value, value, 1.0f);
+                    }
+                }
+                SDRImageSaverConfig config = {};
+                config.alphaForOverride = 1.0f;
+                config.applyToneMap = true;
+                config.apply_sRGB_gammaCorrection = false;
+                config.brightnessScale = 1.0f;
+                config.flipY = false;
+                char filename[256];
+                sprintf_s(filename, "vis%02u.png", mipLevel);
+                saveImage(filename, curDims.x, curDims.y, image, config);
+                delete[] image;
+                cudaArray->unmap(mipLevel);
+
+                if (mipLevel == numMipLevels - 1) {
+                    shared::HierarchicalImportanceMap impMap;
+                    CUDADRV_CHECK(cuMemcpyDtoH(&impMap, impMapAddr, sizeof(impMap)));
+                    printf("");
+                }
+            }
+        }
+
+        constexpr bool testMap = false;
+        if constexpr (testMap) {
+            CUDADRV_CHECK(cuStreamSynchronize(stream));
+            constexpr uint32_t numThreads = 1 << 24;
+            cudau::TypedBuffer<shared::PCG32RNG> rngs;
+            cudau::TypedBuffer<uint32_t> histogram;
+            rngs.initialize(g_gpuEnv.cuContext, bufferType, numThreads);
+            {
+                std::mt19937_64 mt(7124223134912111);
+                shared::PCG32RNG* rngsOnHost = rngs.map();
+                for (int i = 0; i < numThreads; ++i)
+                    rngsOnHost[i].setState(mt());
+                rngs.unmap();
+            }
+            histogram.initialize(
+                g_gpuEnv.cuContext, bufferType,
+                m_image->getWidth() * m_image->getHeight(), 0);
+
+            uint2 imageSize(m_image->getWidth(), m_image->getHeight());
+            g_gpuEnv.computeLightProbs.testImportanceMap.launchWithThreadDim(
+                stream, cudau::dim3(numThreads),
+                imageSize, impMapAddr, rngs.getDevicePointer(), histogram.getDevicePointer());
+
+            CUDADRV_CHECK(cuStreamSynchronize(stream));
+            const uint32_t* histogramOnHost = histogram.map();
+            auto image = new float4[m_image->getWidth() * m_image->getHeight()];
+            uint32_t maxHistValue = 0;
+            for (int y = 0; y < m_image->getHeight(); ++y) {
+                for (int x = 0; x < m_image->getWidth(); ++x) {
+                    uint32_t idx = y * m_image->getWidth() + x;
+                    maxHistValue = std::max(histogramOnHost[idx], maxHistValue);
+                }
+            }
+            for (int y = 0; y < m_image->getHeight(); ++y) {
+                for (int x = 0; x < m_image->getWidth(); ++x) {
+                    uint32_t idx = y * m_image->getWidth() + x;
+                    float value = histogramOnHost[idx] / static_cast<float>(maxHistValue);
+                    image[idx] = float4(value, value, value, 1.0f);
+                }
+            }
+            SDRImageSaverConfig config = {};
+            config.alphaForOverride = 1.0f;
+            config.applyToneMap = false;
+            config.apply_sRGB_gammaCorrection = false;
+            config.brightnessScale = 1.0f;
+            config.flipY = false;
+            saveImage("histogram.png", m_image->getWidth(), m_image->getHeight(), image, config);
+            delete[] image;
+            histogram.unmap();
+        }
+    }
+};
+
+
+
 struct ActiveCameraInfo {
     float timePoint;
     std::string name;
@@ -958,6 +1187,8 @@ struct RenderConfigs {
     float timeBegin;
     float timeEnd;
     uint32_t fps;
+
+    Ref<Environment> environment;
 
     std::map<std::string, Ref<Camera>> cameras;
     std::vector<ActiveCameraInfo> activeCameraInfos;

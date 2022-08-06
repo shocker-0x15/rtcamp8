@@ -5,6 +5,7 @@
 #include <assimp/postprocess.h>
 #include "../common/dds_loader.h"
 #include "../ext/stb_image.h"
+#include "tinyexr.h"
 
 namespace rtc8 {
 
@@ -225,7 +226,12 @@ void Scene::checkLightGeomDistributions() {
     m_geometryGroupBuffer.unmap();
 }
 
-void Scene::setUpLightInstDistribution(CUstream stream, CUdeviceptr lightInstDistAddr) {
+void Scene::setUpLightInstDistribution(
+    CUstream stream, CUdeviceptr worldDimInfoAddr, CUdeviceptr lightInstDistAddr) {
+    g_gpuEnv.computeLightProbs.initializeWorldDimInfo.launchWithThreadDim(
+        stream, cudau::dim3(1),
+        worldDimInfoAddr);
+
     shared::LightDistribution dLightInstDist;
     lightInstDist.getDeviceType(&dLightInstDist);
     CUDADRV_CHECK(cuMemcpyHtoDAsync(
@@ -234,7 +240,7 @@ void Scene::setUpLightInstDistribution(CUstream stream, CUdeviceptr lightInstDis
     uint32_t numInsts = m_instanceSlotOwners.size();
     g_gpuEnv.computeLightProbs.computeInstProbBuffer.launchWithThreadDim(
         stream, cudau::dim3(numInsts),
-        lightInstDistAddr, numInsts,
+        worldDimInfoAddr, lightInstDistAddr, numInsts,
         m_geometryGroupBuffer.getDevicePointer(), m_instanceBuffer.getDevicePointer());
 
     size_t scratchMemSize = m_scanScratchMem.sizeInBytes();
@@ -244,9 +250,9 @@ void Scene::setUpLightInstDistribution(CUstream stream, CUdeviceptr lightInstDis
         lightInstDist.cdfOnDevice(),
         numInsts, stream));
 
-    g_gpuEnv.computeLightProbs.finalizeDiscreteDistribution1D.launchWithThreadDim(
+    g_gpuEnv.computeLightProbs.finalizeWorldDimInfo.launchWithThreadDim(
         stream, cudau::dim3(1),
-        lightInstDistAddr);
+        worldDimInfoAddr, lightInstDistAddr);
 }
 
 void Scene::checkLightInstDistribution(CUdeviceptr lightInstDistAddr) {
@@ -799,6 +805,33 @@ static Ref<cudau::Array> createEmittanceTexture(
     return arrayEmittance;
 }
 
+static void loadEnvironmentalTexture(
+    const std::filesystem::path &filePath,
+    CUcontext cuContext,
+    Ref<cudau::Array>* envLightArray) {
+    int32_t width, height;
+    float* textureData;
+    const char* errMsg = nullptr;
+    int ret = LoadEXR(&textureData, &width, &height, filePath.string().c_str(), &errMsg);
+    if (ret == TINYEXR_SUCCESS) {
+        Ref<cudau::Array> cudaArray = std::make_shared<cudau::Array>();
+        cudaArray->initialize2D(
+            cuContext, cudau::ArrayElementType::Float32, 4,
+            cudau::ArraySurface::Disable, cudau::ArrayTextureGather::Disable,
+            width, height, 1);
+        cudaArray->write(textureData, width * height * 4);
+
+        free(textureData);
+
+        *envLightArray = cudaArray;
+    }
+    else {
+        hpprintf("Failed to read %s\n", filePath.string().c_str());
+        hpprintf("%s\n", errMsg);
+        FreeEXRErrorMessage(errMsg);
+    }
+}
+
 
 
 static Ref<SurfaceMaterial> createLambertianMaterial(
@@ -1271,6 +1304,24 @@ struct CameraInfo {
     std::vector<KeyCameraState> keyStates;
 };
 
+struct EnvironmentInfo {
+    struct File {
+        std::filesystem::path path;
+    };
+    struct Procedural {
+
+    };
+
+    std::variant<
+        uint32_t, // dummy
+        File,
+        Procedural
+    > body;
+
+    float coeff;
+    float rotation;
+};
+
 struct SceneLoadingContext {
     uint32_t lineIndex;
     std::string line;
@@ -1280,6 +1331,10 @@ struct SceneLoadingContext {
     float timeBegin;
     float timeEnd;
     uint32_t fps;
+
+    std::string envName;
+    EnvironmentInfo envInfo;
+
     std::map<std::string, MeshInfo> meshInfos;
     std::map<std::string, InstanceInfo> instInfos;
     std::map<std::string, CameraInfo> camInfos;
@@ -1321,6 +1376,56 @@ std::map<std::string, lineFunc> processors = {
             context.timeBegin = timeBegin;
             context.timeEnd = timeEnd;
             context.fps = static_cast<uint32_t>(std::stoi(m[3].str().c_str()));
+        }
+    },
+    {
+        "envmap",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "envmap";
+            static const std::regex re = makeRegex({cmd, reQuotedPath, reString});
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string envName = m[2].str();
+            throwRuntimeErrorAtLine(
+                !context.meshInfos.contains(envName), context.lineIndex + 1,
+                "Mesh %s has been already created.",
+                envName.c_str());
+
+            std::filesystem::path envFilePath = m[1].str();
+            throwRuntimeErrorAtLine(
+                std::filesystem::exists(envFilePath), context.lineIndex + 1,
+                "Mesh %s does not exist.", envFilePath.string().c_str());
+
+            EnvironmentInfo::File envInfo;
+            envInfo.path = envFilePath;
+            context.envName = envName;
+            context.envInfo.body = envInfo;
+            context.envInfo.coeff = 1.0f;
+            context.envInfo.rotation = 0.0f;
+        }
+    },
+    {
+        "env-state",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "env-state";
+            static const std::regex re = makeRegex({cmd, reString, reReal, reReal });
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string tgtName = m[1].str();
+            throwRuntimeErrorAtLine(
+                tgtName == context.envName, context.lineIndex + 1,
+                "Environment %s does not exist.",
+                tgtName.c_str());
+
+            float coeff = std::stof(m[2].str().c_str());
+            throwRuntimeErrorAtLine(
+                coeff >= 0.0f, context.lineIndex + 1,
+                "Invalid coeff: %f", coeff);
+
+            float rotation = std::stof(m[3].str().c_str());
+
+            context.envInfo.coeff = coeff;
+            context.envInfo.rotation = rotation;
         }
     },
     {
@@ -1665,7 +1770,7 @@ void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* render
     context.lineIndex = -1;
     for (const std::string &line : lines) {
         ++context.lineIndex;
-        if (line.empty())
+        if (line.empty() || line.starts_with("//"))
             continue;
         size_t nextSpacePos = line.find_first_of(" \t");
         std::string firstToken = nextSpacePos != std::string::npos ?
@@ -1691,6 +1796,20 @@ void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* render
     renderConfigs->timeBegin = context.timeBegin;
     renderConfigs->timeEnd = context.timeEnd;
     renderConfigs->fps = context.fps;
+
+    // JP: 環境光源を生成する。
+    if (!context.envName.empty()) {
+        if (std::holds_alternative<EnvironmentInfo::File>(context.envInfo.body)) {
+            const auto &fileInfo = std::get<EnvironmentInfo::File>(context.envInfo.body);
+            Ref<cudau::Array> envArray;
+            loadEnvironmentalTexture(fileInfo.path, g_gpuEnv.cuContext, &envArray);
+            auto envTex = std::make_shared<Texture2D>(envArray);
+            envTex->setReadMode(cudau::TextureReadMode::ElementType);
+            auto env = std::make_shared<ImageBasedEnvironment>(
+                context.envInfo.coeff, context.envInfo.rotation, envTex);
+            renderConfigs->environment = env;
+        }
+    }
 
     // JP: カメラを生成する。
     for (auto &it : context.camInfos) {

@@ -70,7 +70,7 @@ static bool withGfx = true;
 
 const void initializeScreenRelatedBuffers(uint32_t screenWidth, uint32_t screenHeight) {
     rngBuffer.initialize2D(
-        g_gpuEnv.cuContext, cudau::ArrayElementType::UInt32, (sizeof(shared::PCG32RNG) + 3) / 4,
+        g_gpuEnv.cuContext, cudau::ArrayElementType::UInt32, nextPowerOf2((sizeof(shared::PCG32RNG) + 3) / 4),
         cudau::ArraySurface::Enable, cudau::ArrayTextureGather::Disable,
         screenWidth, screenHeight, 1);
     {
@@ -489,6 +489,13 @@ static int32_t runGuiApp() {
 
     uint64_t frameIndex = 0;
     glfwSetWindowUserPointer(window, &frameIndex);
+
+    bool enableEnvironmentalLight = false;
+    if (renderConfigs.environment) {
+        enableEnvironmentalLight = true;
+        renderConfigs.environment->setUpDeviceData(&perFramePlpOnHost.envLight, renderConfigs.timeBegin);
+    }
+
     uint32_t numAccumFrames = 0;
     float timePoint = renderConfigs.timeBegin;
     bool enableFreeCamera = false;
@@ -663,6 +670,7 @@ static int32_t runGuiApp() {
 
         // Scene Window
         bool timeChanged = false;
+        bool envMapChanged = false;
         {
             ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
@@ -677,6 +685,14 @@ static int32_t runGuiApp() {
             ImGui::InputFloat3("Cam. Pos.", reinterpret_cast<float*>(&g_cameraPosition));
             ImGui::InputFloat4("Cam. Ori.", reinterpret_cast<float*>(&g_tempCameraOrientation));
             ImGui::Text("Cam. Pos. Speed (T/G): %g", g_cameraPositionalMovingSpeed);
+            ImGui::BeginDisabled(!enableFreeCamera);
+            if (ImGui::Button("Cam. on track.")) {
+                enableFreeCamera = false;
+                cameraIsActuallyMoving = true;
+            }
+            ImGui::EndDisabled();
+
+            envMapChanged = ImGui::Checkbox("Environmental Lighting", &enableEnvironmentalLight);
 
             ImGui::End();
         }
@@ -716,9 +732,15 @@ static int32_t runGuiApp() {
 
         // JP: newSequence: temporal accumulationなどのつながりが消えるという意味。
         //     firstAccumFrame: 純粋なサンプルサイズ増加の開始。
-        bool newSequence = resized || frameIndex == 0/* || resetAccumulation*/;
+        bool newSequence =
+            resized
+            || frameIndex == 0/* || resetAccumulation*/;
         bool firstAccumFrame =
-            /*animate || !enableAccumulation ||  */cameraIsActuallyMoving || newSequence || timeChanged;
+            /*animate || !enableAccumulation ||  */
+            envMapChanged
+            || cameraIsActuallyMoving
+            || newSequence
+            || timeChanged;
         if (firstAccumFrame)
             numAccumFrames = 0;
         else
@@ -728,8 +750,6 @@ static int32_t runGuiApp() {
 
         if (operatingCamera)
             enableFreeCamera = true;
-        if (timeChanged)
-            enableFreeCamera = false;
         if (enableFreeCamera) {
             perFramePlpOnHost.camera.position = g_cameraPosition;
             perFramePlpOnHost.camera.orientation = g_tempCameraOrientation;
@@ -744,7 +764,7 @@ static int32_t runGuiApp() {
 
         perFramePlpOnHost.instances = g_scene.getInstancesOnDevice();
 
-        perFramePlpOnHost.envLight.enabled = false;
+        perFramePlpOnHost.enableEnvironmentalLight = enableEnvironmentalLight;
 
         perFramePlpOnHost.mousePosition = int2(g_mouseX, g_mouseY);
 
@@ -771,9 +791,19 @@ static int32_t runGuiApp() {
             perFramePlpOnDevice, &perFramePlpOnHost, sizeof(perFramePlpOnHost), curCuStream));
 
         curGpuTimer.computeLightProbs.start(curCuStream);
-        g_scene.setUpLightInstDistribution(
-            curCuStream,
-            perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, lightInstDist));
+        {
+            if (renderConfigs.environment) {
+                renderConfigs.environment->computeDistribution(
+                    curCuStream,
+                    perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, envLight),
+                    timePoint);
+            }
+
+            g_scene.setUpLightInstDistribution(
+                curCuStream,
+                perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, worldDimInfo),
+                perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, lightInstDist));
+        }
         curGpuTimer.computeLightProbs.stop(curCuStream);
         //g_scene.checkLightInstDistribution(
         //    perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, lightInstDist));
@@ -897,7 +927,7 @@ static int32_t runApp() {
     perFramePlpOnHost.camera.aspect =
         static_cast<float>(renderConfigs.imageWidth) / renderConfigs.imageHeight;
     perFramePlpOnHost.outputBuffer = cudaOutputBuffer.getSurfaceObject(0);
-    perFramePlpOnHost.envLight.enabled = false;
+    perFramePlpOnHost.enableEnvironmentalLight = false;
     perFramePlpOnHost.mousePosition = int2(0, 0);
     perFramePlpOnHost.enableDebugPrint = false;
 
@@ -943,6 +973,7 @@ static int32_t runApp() {
 
         g_scene.setUpLightInstDistribution(
             cuStream,
+            perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, worldDimInfo),
             perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, lightInstDist));
         //g_scene.checkLightInstDistribution(
         //    perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, lightInstDist));

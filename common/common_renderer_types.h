@@ -12,7 +12,7 @@ static constexpr bool useGenericBSDF = false;
 #define HARD_CODED_BSDF LambertBRDF
 
 #define DEBUG_MOUSE_POS_CONDITION \
-    (getMousePosition() == make_int2(optixGetLaunchIndex()) && getDebugPrintEnabled())
+    (device::getMousePosition() == make_int2(optixGetLaunchIndex()) && device::getDebugPrintEnabled())
 
 #define PROCESS_DYNAMIC_FUNCTIONS \
     PROCESS_DYNAMIC_FUNCTION(readModifiedNormalFromNormalMap), \
@@ -31,7 +31,8 @@ static constexpr bool useGenericBSDF = false;
     PROCESS_DYNAMIC_FUNCTION(DichromaticBRDF_evaluateF), \
     PROCESS_DYNAMIC_FUNCTION(DichromaticBRDF_evaluatePDF), \
     PROCESS_DYNAMIC_FUNCTION(DichromaticBRDF_evaluateDHReflectanceEstimate), \
-    PROCESS_DYNAMIC_FUNCTION(ImageBasedEnvironmentalLight_sample),
+    PROCESS_DYNAMIC_FUNCTION(ImageBasedEnvironmentalLight_sample), \
+    PROCESS_DYNAMIC_FUNCTION(ImageBasedEnvironmentalLight_evaluate),
 
 enum CallableProgram {
 #define PROCESS_DYNAMIC_FUNCTION(Func) CallableProgram_ ## Func
@@ -87,6 +88,15 @@ namespace rtc8 {
     using BoundingBox3D = BoundingBox3DTemplate<float>;
     using RGBSpectrum = RGBTemplate<float>;
 } // namespace rtc8
+
+
+
+namespace rtc8::device {
+
+CUDA_DEVICE_FUNCTION int2 getMousePosition();
+CUDA_DEVICE_FUNCTION bool getDebugPrintEnabled();
+
+}
 
 
 
@@ -291,20 +301,21 @@ class RegularConstantContinuousDistribution1DTemplate;
 
 template <typename RealType>
 class RegularConstantContinuousDistribution1DTemplate<RealType, false> {
-    const RealType* m_PDF;
+    const RealType* m_weights;
     const RealType* m_CDF;
     RealType m_integral;
     uint32_t m_numValues;
 
 public:
     RegularConstantContinuousDistribution1DTemplate(
-        const RealType* PDF, const RealType* CDF, RealType integral, uint32_t numValues) :
-        m_PDF(PDF), m_CDF(CDF), m_integral(integral), m_numValues(numValues) {}
+        const RealType* weights, const RealType* CDF, RealType integral, uint32_t numValues) :
+        m_weights(weights), m_CDF(CDF), m_integral(integral), m_numValues(numValues) {}
 
     CUDA_COMMON_FUNCTION RegularConstantContinuousDistribution1DTemplate() {}
 
     CUDA_COMMON_FUNCTION RealType sample(RealType u, RealType* probDensity) const {
         Assert(u >= 0 && u < 1, "\"u\": %g must be in range [0, 1).", u);
+        u *= m_integral;
         int idx = 0;
         for (int d = nextPowerOf2(m_numValues) >> 1; d >= 1; d >>= 1) {
             if (idx + d >= m_numValues)
@@ -312,16 +323,21 @@ public:
             if (m_CDF[idx + d] <= u)
                 idx += d;
         }
-        Assert(idx >= 0 && idx < m_numValues, "Invalid Index!: %d", idx);
-        RealType t = (u - m_CDF[idx]) / (m_CDF[idx + 1] - m_CDF[idx]);
-        *probDensity = m_PDF[idx];
+        Assert(idx < m_numValues, "Invalid Index!: %u >= %u, u: %g, integ: %g",
+               idx, m_numValues, u, m_integral);
+        RealType lCDF = m_CDF[idx];
+        RealType rCDF = m_integral;
+        if (idx < m_numValues - 1)
+            rCDF = m_CDF[idx + 1];
+        RealType t = (u - lCDF) / (rCDF - lCDF);
+        *probDensity = m_weights[idx] / m_integral;
         return (idx + t) / m_numValues;
     }
 
     CUDA_COMMON_FUNCTION RealType evaluatePDF(RealType smp) const {
         Assert(smp >= 0 && smp < 1.0, "\"smp\": %g is out of range [0, 1).", smp);
         int32_t idx = min(m_numValues - 1, static_cast<uint32_t>(smp * m_numValues));
-        return m_PDF[idx];
+        return m_weights[idx] / m_integral;
     }
 
     CUDA_COMMON_FUNCTION RealType integral() const {
@@ -413,6 +429,198 @@ public:
         uint32_t idx1D = mapPrimarySampleToDiscrete(d1, m_top1DDist.numValues());
         return m_top1DDist.evaluatePDF(d1) * m_1DDists[idx1D].evaluatePDF(d0);
     }
+};
+
+
+
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 computeProbabilityTextureDimentions(uint32_t maxNumElems) {
+#if !defined(__CUDA_ARCH__)
+    using std::max;
+#endif
+    uint2 dims = make_uint2(max(nextPowerOf2(maxNumElems), 2u), 1u);
+    while ((dims.x != dims.y) && (dims.x != 2 * dims.y)) {
+        dims.x /= 2;
+        dims.y *= 2;
+    }
+    return dims;
+}
+
+class HierarchicalImportanceMap {
+    CUtexObject m_cuTexObj;
+    unsigned int m_maxDimX : 16;
+    unsigned int m_maxDimY : 16;
+    unsigned int m_dimX : 16;
+    unsigned int m_dimY : 16;
+    float m_integral;
+
+public:
+    CUDA_COMMON_FUNCTION void setTexObject(CUtexObject texObj, uint2 maxDims) {
+        m_cuTexObj = texObj;
+        m_maxDimX = maxDims.x;
+        m_maxDimY = maxDims.y;
+    }
+
+    CUDA_COMMON_FUNCTION void setDimensions(const uint2 &dims) {
+        m_dimX = dims.x;
+        m_dimY = dims.y;
+    }
+
+    CUDA_COMMON_FUNCTION uint2 getDimensions() const {
+        return make_uint2(m_dimX, m_dimY);
+    }
+
+    CUDA_COMMON_FUNCTION float integral() const {
+        if (m_cuTexObj == 0)
+            return 0.0f;
+        return m_integral;
+    }
+
+    CUDA_COMMON_FUNCTION uint32_t calcNumMipLevels() const {
+        return nextPowOf2Exponent(m_dimX) + 1;
+    }
+    CUDA_COMMON_FUNCTION uint32_t calcMaxNumMipLevels() const {
+        return nextPowOf2Exponent(m_maxDimX) + 1;
+    }
+
+    CUDA_COMMON_FUNCTION CUDA_INLINE static uint2 compute2DFrom1D(uint2 dim, uint32_t index1D) {
+        return make_uint2(index1D % dim.x, index1D / dim.y);
+    }
+    CUDA_COMMON_FUNCTION CUDA_INLINE static uint32_t compute1DFrom2D(uint2 dim, const uint2 &index2D) {
+        return index2D.y * dim.x + index2D.x;
+    }
+
+#if defined(__CUDA_ARCH__) || defined(OPTIXU_Platform_CodeCompletion)
+    CUDA_DEVICE_FUNCTION uint2 sample(
+        float u0, float u1, float* remappedU0, float* remappedU1, float* prob) const {
+        Assert(u0 >= 0 && u1 < 1, "\"u0\": %g must be in range [0, 1).", u0);
+        Assert(u1 >= 0 && u1 < 1, "\"u1\": %g must be in range [0, 1).", u1);
+        uint2 index2D = make_uint2(0, 0);
+        uint32_t numMipLevels = calcNumMipLevels();
+        *prob = 1;
+        float2 recCurActualDims;
+        {
+            uint2 curActualDims = make_uint2(2, m_maxDimX > m_maxDimY ? 1 : 2);
+            curActualDims <<= calcMaxNumMipLevels() - numMipLevels;
+            recCurActualDims = make_float2(1.0f / curActualDims.x, 1.0f / curActualDims.y);
+        }
+        uint2 curDims = make_uint2(2, m_dimX > m_dimY ? 1 : 2);
+        for (uint32_t mipLevel = numMipLevels - 2; mipLevel != UINT32_MAX; --mipLevel) {
+            index2D = 2 * index2D;
+            float2 tc = make_float2(index2D.x + 0.5f, index2D.y + 0.5f);
+            float2 ll = tc + make_float2(0, 1);
+            float2 lr = tc + make_float2(1, 1);
+            float2 ur = tc + make_float2(1, 0);
+            float2 ul = tc + make_float2(0, 0);
+            float2 nll = ll * recCurActualDims;
+            float2 nlr = lr * recCurActualDims;
+            float2 nur = ur * recCurActualDims;
+            float2 nul = ul * recCurActualDims;
+            float vll = ll.y < curDims.y ?
+                tex2DLod<float>(m_cuTexObj, nll.x, nll.y, mipLevel) : 0.0f;
+            float vlr = (lr.x < curDims.x && lr.y < curDims.y) ?
+                tex2DLod<float>(m_cuTexObj, nlr.x, nlr.y, mipLevel) : 0.0f;
+            float vur = ur.x < curDims.x ?
+                tex2DLod<float>(m_cuTexObj, nur.x, nur.y, mipLevel) : 0.0f;
+            float vul = tex2DLod<float>(m_cuTexObj, nul.x, nul.y, mipLevel);
+
+            float leftProb = vll + vul;
+            float rightProb = vlr + vur;
+            u0 *= (leftProb + rightProb);
+            *prob *= 1.0f / (leftProb + rightProb);
+            float upperProb;
+            float lowerProb;
+            if (u0 < leftProb) {
+                u0 = (u0 - 0) / leftProb;
+                upperProb = vul;
+                lowerProb = vll;
+            }
+            else {
+                index2D.x += 1;
+                u0 = (u0 - leftProb) / rightProb;
+                upperProb = vur;
+                lowerProb = vlr;
+            }
+
+            u1 *= (upperProb + lowerProb);
+            if (u1 < upperProb) {
+                *prob *= upperProb;
+                u1 = (u1 - 0) / upperProb;
+            }
+            else {
+                index2D.y += 1;
+                *prob *= lowerProb;
+                u1 = (u1 - upperProb) / lowerProb;
+            }
+
+            recCurActualDims /= 2.0f;
+            curDims *= 2;
+        }
+        *remappedU0 = u0;
+        *remappedU1 = u1;
+
+        return make_uint2(index2D.x, index2D.y);
+    }
+
+    CUDA_DEVICE_FUNCTION float evaluate(const uint2 &p) const {
+        float2 tc = make_float2(p.x + 0.5f, p.y + 0.5f) / make_float2(m_maxDimX, m_maxDimY);
+        float v = tex2DLod<float>(m_cuTexObj, tc.x, tc.y, 0.0f);
+        float prob = v / m_integral;
+        return prob;
+
+        //uint32_t numMipLevels = calcNumMipLevels();
+        //float2 recCurActualDims;
+        //{
+        //    uint2 curActualDims = make_uint2(m_maxDimX, m_maxDimY);
+        //    recCurActualDims = make_float2(1.0f / curActualDims.x, 1.0f / curActualDims.y);
+        //}
+        //uint2 curDims = make_uint2(m_dimX, m_dimY);
+        //float probDensity = 1.0f / (m_dimX * m_dimY);
+        //uint2 index2D = make_uint2(p.x, p.y);
+        //for (uint32_t mipLevel = 0; mipLevel < numMipLevels - 1; ++mipLevel) {
+        //    uint2 baseIndex2D = index2D / 2 * 2;
+        //    float2 tc = make_float2(baseIndex2D.x + 0.5f, baseIndex2D.y + 0.5f);
+        //    float2 ll = tc + make_float2(0, 1);
+        //    float2 lr = tc + make_float2(1, 1);
+        //    float2 ur = tc + make_float2(1, 0);
+        //    float2 ul = tc + make_float2(0, 0);
+        //    float2 nll = ll * recCurActualDims;
+        //    float2 nlr = lr * recCurActualDims;
+        //    float2 nur = ur * recCurActualDims;
+        //    float2 nul = ul * recCurActualDims;
+        //    float vll = ll.y < curDims.y ?
+        //        tex2DLod<float>(m_cuTexObj, nll.x, nll.y, mipLevel) : 0.0f;
+        //    float vlr = (lr.x < curDims.x && lr.y < curDims.y) ?
+        //        tex2DLod<float>(m_cuTexObj, nlr.x, nlr.y, mipLevel) : 0.0f;
+        //    float vur = ur.x < curDims.x ?
+        //        tex2DLod<float>(m_cuTexObj, nur.x, nur.y, mipLevel) : 0.0f;
+        //    float vul = tex2DLod<float>(m_cuTexObj, nul.x, nul.y, mipLevel);
+
+        //    probDensity /= (vll + vul + vlr + vur);
+        //    if (index2D.x == baseIndex2D.x) {
+        //        if (index2D.y == baseIndex2D.y)
+        //            probDensity *= vul;
+        //        else
+        //            probDensity *= vll;
+        //    }
+        //    else {
+        //        if (index2D.y == baseIndex2D.y)
+        //            probDensity *= vur;
+        //        else
+        //            probDensity *= vlr;
+        //    }
+
+        //    index2D /= 2;
+        //    recCurActualDims *= 2.0f;
+        //    curDims /= 2;
+        //}
+
+        //return probDensity;
+    }
+
+    CUDA_DEVICE_FUNCTION void setIntegral(float v) {
+        m_integral = v;
+    }
+#endif
 };
 
 
@@ -736,16 +944,22 @@ struct SurfaceMaterial {
 
 using EnvLightSample = DynamicFunction<
     RGBSpectrum(const uint32_t* data, float uDir0, float uDir1, float* phi, float* theta, float* dirPDensity)>;
+using EnvLightEvaluate = DynamicFunction<
+    RGBSpectrum(const uint32_t* data, float phi, float theta, float* hypDirPDensity)>;
 
 
 
 struct ImageBasedEnvironmentalLight {
     CUtexObject texObj;
-    RegularConstantContinuousDistribution2D importanceMap;
+    HierarchicalImportanceMap importanceMap;
+    uint32_t imageWidth : 16;
+    uint32_t imageHeight : 16;
 
 #if defined(__CUDA_ARCH__) || defined(OPTIXU_Platform_CodeCompletion)
     CUDA_DEVICE_FUNCTION RGBSpectrum sample(
         float uDir0, float uDir1, float* phi, float* theta, float* dirPDensity) const;
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluate(
+        float phi, float theta, float* hypDirPDensity) const;
 #endif
 };
 
@@ -756,12 +970,30 @@ struct EnvironmentalLight {
     uint32_t body[sizeof(ImageBasedEnvironmentalLight) / sizeof(uint32_t)];
 
     EnvLightSample envLightSample;
-    uint32_t enabled : 1;
+    EnvLightEvaluate envLightEvaluate;
+    float powerCoeff;
+    float rotation;
 
 #if defined(__CUDA_ARCH__) || defined(OPTIXU_Platform_CodeCompletion)
     CUDA_DEVICE_FUNCTION RGBSpectrum sample(
-        float uDir0, float uDir1, float* phi, float* theta, float* dirPDensity) const {
-        return envLightSample(body, uDir0, uDir1, phi, theta, dirPDensity);
+        float uDir0, float uDir1, Vector3D* dir, float* dirPDensity) const {
+        float phi, theta;
+        RGBSpectrum radiance = powerCoeff * envLightSample(body, uDir0, uDir1, &phi, &theta, dirPDensity);
+        float posPhi = phi - rotation;
+        posPhi = posPhi - floorf(posPhi / (2 * pi_v<float>)) * 2 * pi_v<float>;
+        phi = posPhi;
+        *dir = Vector3D::fromPolarYUp(phi, theta);
+        return radiance;
+    }
+
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluate(
+        const Vector3D dir, float* hypDirPDensity) const {
+        float posPhi, theta;
+        dir.toPolarYUp(&theta, &posPhi);
+        float phi = posPhi + rotation;
+        phi = phi - floorf(phi / (2 * pi_v<float>)) * 2 * pi_v<float>;
+        RGBSpectrum radiance = powerCoeff * envLightEvaluate(body, phi, theta, hypDirPDensity);
+        return radiance;
     }
 #endif
 };
@@ -804,6 +1036,7 @@ struct GeometryInstance {
     CUtexObject normal;
     TexDimInfo normalDimInfo;
     ReadModifiedNormal readModifiedNormal;
+    BoundingBox3D aabb;
     LightDistribution emitterPrimDist;
     uint32_t surfMatSlot;
 };
@@ -860,6 +1093,7 @@ struct StaticTransform {
 struct GeometryGroup {
     const uint32_t* geomInstSlots;
     LightDistribution lightGeomInstDist;
+    BoundingBox3D aabb;
 };
 
 struct Instance {
@@ -869,20 +1103,104 @@ struct Instance {
     uint32_t geomGroupSlot;
 };
 
+
+
+struct WorldDimInfo {
+    BoundingBox3D aabb;
+    Point3D center;
+    float radius;
+};
+
+
+
+struct Point3DAsOrderedInt {
+    int32_t x, y, z;
+
+    CUDA_COMMON_FUNCTION Point3DAsOrderedInt() : x(0), y(0), z(0) {
+    }
+    CUDA_COMMON_FUNCTION Point3DAsOrderedInt(const Point3D &v) :
+        x(floatToOrderedInt(v.x)), y(floatToOrderedInt(v.y)), z(floatToOrderedInt(v.z)) {
+    }
+
+    CUDA_COMMON_FUNCTION Point3DAsOrderedInt& operator=(const Point3DAsOrderedInt &v) {
+        x = v.x;
+        y = v.y;
+        z = v.z;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION Point3DAsOrderedInt& operator=(const volatile Point3DAsOrderedInt &v) {
+        x = v.x;
+        y = v.y;
+        z = v.z;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION volatile Point3DAsOrderedInt& operator=(const Point3DAsOrderedInt &v) volatile {
+        x = v.x;
+        y = v.y;
+        z = v.z;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION volatile Point3DAsOrderedInt& operator=(const volatile Point3DAsOrderedInt &v) volatile {
+        x = v.x;
+        y = v.y;
+        z = v.z;
+        return *this;
+    }
+
+    CUDA_COMMON_FUNCTION explicit operator Point3D() const {
+        return Point3D(orderedIntToFloat(x), orderedIntToFloat(y), orderedIntToFloat(z));
+    }
+    CUDA_COMMON_FUNCTION explicit operator Point3D() const volatile {
+        return Point3D(orderedIntToFloat(x), orderedIntToFloat(y), orderedIntToFloat(z));
+    }
+};
+
+struct BoundingBox3DAsOrderedInt {
+    Point3DAsOrderedInt minP;
+    Point3DAsOrderedInt maxP;
+
+    CUDA_COMMON_FUNCTION BoundingBox3DAsOrderedInt(const BoundingBox3D &aabb) :
+        minP(aabb.minP), maxP(aabb.maxP) {}
+
+    CUDA_COMMON_FUNCTION BoundingBox3DAsOrderedInt& operator=(const BoundingBox3DAsOrderedInt &v) {
+        minP = v.minP;
+        maxP = v.maxP;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION BoundingBox3DAsOrderedInt& operator=(const volatile BoundingBox3DAsOrderedInt &v) {
+        minP = v.minP;
+        maxP = v.maxP;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION volatile BoundingBox3DAsOrderedInt& operator=(const BoundingBox3DAsOrderedInt &v) volatile {
+        minP = v.minP;
+        maxP = v.maxP;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION volatile BoundingBox3DAsOrderedInt& operator=(const volatile BoundingBox3DAsOrderedInt &v) volatile {
+        minP = v.minP;
+        maxP = v.maxP;
+        return *this;
+    }
+
+    CUDA_COMMON_FUNCTION explicit operator BoundingBox3D() const {
+        return BoundingBox3D(static_cast<Point3D>(minP), static_cast<Point3D>(maxP));
+    }
+    CUDA_COMMON_FUNCTION explicit operator BoundingBox3D() const volatile {
+        return BoundingBox3D(static_cast<Point3D>(minP), static_cast<Point3D>(maxP));
+    }
+};
+
 } // namespace rtc8::shared
 
 
 
 #if defined(__CUDA_ARCH__) || defined(OPTIXU_Platform_CodeCompletion)
 
-#define print3d(v) v.x, v.y, v.z
-
 namespace rtc8::device {
 
 static constexpr float RayEpsilon = 1e-4;
 
-CUDA_DEVICE_FUNCTION int2 getMousePosition();
-CUDA_DEVICE_FUNCTION bool getDebugPrintEnabled();
 CUDA_DEVICE_FUNCTION const shared::BSDFProcedureSet &getBSDFProcedureSet(uint32_t slot);
 
 
@@ -1770,8 +2088,8 @@ public:
             "rDir: (%g, %g, %g), dirPDF: %g, "
             "snCorrection: %g",
             smp.uDir[0], smp.uDir[1],
-            print3d(query.dirLocal), print3d(query.geometricNormalLocal),
-            print3d(result->dirLocal), result->dirPDensity,
+            vec3print(query.dirLocal), vec3print(query.geometricNormalLocal),
+            vec3print(result->dirLocal), result->dirPDensity,
             snCorrection);
         return fsValue;
     }
@@ -1789,8 +2107,8 @@ public:
             "evalBSDF: qDir: (%g, %g, %g), gNormal: (%g, %g, %g), "
             "rDir: (%g, %g, %g), "
             "snCorrection: %g",
-            print3d(query.dirLocal), print3d(query.geometricNormalLocal),
-            print3d(vSampled),
+            vec3print(query.dirLocal), vec3print(query.geometricNormalLocal),
+            vec3print(vSampled),
             snCorrection);
         return fsValue;
     }
@@ -1803,6 +2121,28 @@ public:
     }
 };
 
+
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE void atomicMinMax_block(
+    shared::BoundingBox3DAsOrderedInt* dstAabb, const shared::BoundingBox3DAsOrderedInt &aabb) {
+    atomicMin_block(&dstAabb->minP.x, aabb.minP.x);
+    atomicMin_block(&dstAabb->minP.y, aabb.minP.y);
+    atomicMin_block(&dstAabb->minP.z, aabb.minP.z);
+    atomicMax_block(&dstAabb->maxP.x, aabb.maxP.x);
+    atomicMax_block(&dstAabb->maxP.y, aabb.maxP.y);
+    atomicMax_block(&dstAabb->maxP.z, aabb.maxP.z);
+}
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE void atomicMinMax(
+    shared::BoundingBox3DAsOrderedInt* dstAabb, const shared::BoundingBox3DAsOrderedInt &aabb) {
+    atomicMin(&dstAabb->minP.x, aabb.minP.x);
+    atomicMin(&dstAabb->minP.y, aabb.minP.y);
+    atomicMin(&dstAabb->minP.z, aabb.minP.z);
+    atomicMax(&dstAabb->maxP.x, aabb.maxP.x);
+    atomicMax(&dstAabb->maxP.y, aabb.maxP.y);
+    atomicMax(&dstAabb->maxP.z, aabb.maxP.z);
+}
+
 } // namespace rtc8::device
 
 
@@ -1811,16 +2151,33 @@ namespace rtc8::shared {
 
 CUDA_DEVICE_FUNCTION RGBSpectrum ImageBasedEnvironmentalLight::sample(
     float uDir0, float uDir1, float* phi, float* theta, float* dirPDensity) const {
-    float u, v;
-    float uvPDF;
-    importanceMap.sample(uDir0, uDir1, &u, &v, &uvPDF);
+    float prob;
+    uint2 pix = importanceMap.sample(uDir0, uDir1, &uDir0, &uDir1, &prob);
+    float2 uv = make_float2((pix.x + uDir0) / imageWidth,
+                            (pix.y + uDir1) / imageHeight);
+    float uvPDensity = (imageWidth * imageHeight) * prob;
+    float u = uv.x, v = uv.y;
     *phi = 2 * pi_v<float> * u;
     *theta = pi_v<float> * v;
 
-    *dirPDensity = uvPDF / (2 * pow2(pi_v<float>) * std::sin(*theta));
+    *dirPDensity = uvPDensity / (2 * pow2(pi_v<float>) * std::sin(*theta));
 
     float4 texValue = tex2DLod<float4>(texObj, u, v, 0.0f);
     RGBSpectrum radiance(texValue.x, texValue.y, texValue.z);
+
+    return radiance;
+}
+
+CUDA_DEVICE_FUNCTION RGBSpectrum ImageBasedEnvironmentalLight::evaluate(
+    float phi, float theta, float* hypDirPDensity) const {
+    float2 texCoord = make_float2(phi / (2 * pi_v<float>), theta / pi_v<float>);
+    float4 texValue = tex2DLod<float4>(texObj, texCoord.x, texCoord.y, 0.0f);
+    RGBSpectrum radiance(texValue.x, texValue.y, texValue.z);
+
+    uint2 pix = make_uint2(imageWidth * texCoord.x, imageHeight * texCoord.y);
+    float prob = importanceMap.evaluate(pix);
+    float uvPDensity = (imageWidth * imageHeight) * prob;
+    *hypDirPDensity = uvPDensity / (2 * pow2(pi_v<float>) * std::sin(theta));
 
     return radiance;
 }
@@ -1831,6 +2188,12 @@ RT_CALLABLE_PROGRAM RGBSpectrum RT_DC_NAME(ImageBasedEnvironmentalLight_sample)(
     return envLight.sample(uDir0, uDir1, phi, theta, dirPDensity);
 }
 CUDA_DECLARE_CALLABLE_PROGRAM_POINTER(ImageBasedEnvironmentalLight_sample);
+RT_CALLABLE_PROGRAM RGBSpectrum RT_DC_NAME(ImageBasedEnvironmentalLight_evaluate)(
+    const uint32_t* data, float phi, float theta, float* hypDirPDensity) {
+    auto &envLight = *reinterpret_cast<const ImageBasedEnvironmentalLight*>(data);
+    return envLight.evaluate(phi, theta, hypDirPDensity);
+}
+CUDA_DECLARE_CALLABLE_PROGRAM_POINTER(ImageBasedEnvironmentalLight_evaluate);
 
 } // namespace rtc8::shared
 

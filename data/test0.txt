@@ -1,6 +1,10 @@
 image 1920 1080
 time 0 10 60
 
+//envmap "C:\Users\shocker_0x15\repos\assets\IBLs\WhiteOne.exr" env
+envmap "C:\Users\shocker_0x15\repos\assets\IBLs\sIBL_archive\Malibu_Overlook_3k_corrected.exr" env
+env-state env 1.0 0
+
 mesh "C:/Users/shocker_0x15/repos/assets/CornellBox_RB/Cornell_box_RB1.obj" 1.0 cornell_box
 
 inst cornell_box cornell_box_inst
@@ -14,12 +18,12 @@ rotate cornell_box_inst 0.0 1.0 0.0 360.0
 addkey cornell_box_inst 5.0 false false
 cyclic cornell_box_inst
 
-rect 0.5 0.5 rectlight
-emittance rectlight 100 100 100
-
-inst rectlight rectlight_inst
-trans rectlight_inst 0.0 0.999 0.0
-addkey rectlight_inst 0.0 false false
+//rect 0.5 0.5 rectlight
+//emittance rectlight 100 100 100
+//
+//inst rectlight rectlight_inst
+//trans rectlight_inst 0.0 0.999 0.0
+//addkey rectlight_inst 0.0 false false
 
 camera cam
 fovy cam 50

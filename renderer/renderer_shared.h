@@ -50,10 +50,7 @@ struct PerFramePipelineLaunchParameters {
     Instance* instances;
 
     EnvironmentalLight envLight;
-    Point3D worldCenter;
-    float worldRadius;
-    float envLightPowerCoeff;
-    float envLightRotation;
+    WorldDimInfo worldDimInfo;
     LightDistribution lightInstDist;
 
     optixu::NativeBlockBuffer2D<RGBSpectrum> outputBuffer;
@@ -64,6 +61,7 @@ struct PerFramePipelineLaunchParameters {
     PerspectiveCamera camera;
     uint32_t numAccumFrames;
     uint32_t enableDebugPrint : 1;
+    uint32_t enableEnvironmentalLight : 1;
 };
 
 struct PipelineLaunchParameters {
