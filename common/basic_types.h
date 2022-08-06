@@ -2,10 +2,10 @@
 
 #include "common_shared.h"
 
-#define vec2print(v) v.x, v.y
-#define vec3print(v) v.x, v.y, v.z
-#define vec4print(v) v.x, v.y, v.z, v.w
-#define rgbprint(v) v.r, v.g, v.b
+#define vec2print(v) (v).x, (v).y
+#define vec3print(v) (v).x, (v).y, (v).z
+#define vec4print(v) (v).x, (v).y, (v).z, (v).w
+#define rgbprint(v) (v).r, (v).g, (v).b
 
 #if !defined(__CUDA_ARCH__) && !defined(__CUDACC__)
 // ----------------------------------------------------------------

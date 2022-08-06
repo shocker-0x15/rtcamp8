@@ -979,6 +979,9 @@ struct EnvironmentalLight {
         float uDir0, float uDir1, Vector3D* dir, float* dirPDensity) const {
         float phi, theta;
         RGBSpectrum radiance = powerCoeff * envLightSample(body, uDir0, uDir1, &phi, &theta, dirPDensity);
+        Assert(radiance.allNonNegativeFinite() && isfinite(*dirPDensity),
+               "ImageBasedEnvironmentalLight::sample: u: (%g, %g), phi: %g, theta: %g, dirPD: %g",
+               uDir0, uDir1, phi, theta, *dirPDensity);
         float posPhi = phi - rotation;
         posPhi = posPhi - floorf(posPhi / (2 * pi_v<float>)) * 2 * pi_v<float>;
         phi = posPhi;
@@ -993,6 +996,9 @@ struct EnvironmentalLight {
         float phi = posPhi + rotation;
         phi = phi - floorf(phi / (2 * pi_v<float>)) * 2 * pi_v<float>;
         RGBSpectrum radiance = powerCoeff * envLightEvaluate(body, phi, theta, hypDirPDensity);
+        Assert(radiance.allNonNegativeFinite() && isfinite(*hypDirPDensity),
+               "ImageBasedEnvironmentalLight::evaluate: phi: %g, theta: %g, hypDirPD: %g",
+               phi, theta, *hypDirPDensity);
         return radiance;
     }
 #endif
@@ -2161,6 +2167,10 @@ CUDA_DEVICE_FUNCTION RGBSpectrum ImageBasedEnvironmentalLight::sample(
     *theta = pi_v<float> * v;
 
     *dirPDensity = uvPDensity / (2 * pow2(pi_v<float>) * std::sin(*theta));
+    if (!isfinite(*dirPDensity)) {
+        *dirPDensity = 0.0f;
+        return RGBSpectrum::Zero();
+    }
 
     float4 texValue = tex2DLod<float4>(texObj, u, v, 0.0f);
     RGBSpectrum radiance(texValue.x, texValue.y, texValue.z);
@@ -2178,6 +2188,10 @@ CUDA_DEVICE_FUNCTION RGBSpectrum ImageBasedEnvironmentalLight::evaluate(
     float prob = importanceMap.evaluate(pix);
     float uvPDensity = (imageWidth * imageHeight) * prob;
     *hypDirPDensity = uvPDensity / (2 * pow2(pi_v<float>) * std::sin(theta));
+    if (!isfinite(*hypDirPDensity)) {
+        *hypDirPDensity = 0.0f;
+        return RGBSpectrum::Zero();
+    }
 
     return radiance;
 }

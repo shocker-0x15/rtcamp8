@@ -412,6 +412,9 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
                     float bsdfPDensity = dirPDensity;
                     misWeight = pow2(bsdfPDensity) / (pow2(bsdfPDensity) + pow2(lightPDensity));
                 }
+                Assert(radiance.allNonNegativeFinite() && rtc8::isfinite(misWeight),
+                       "EnvMap Hit (l: %u): (%g, %g, %g), misW: %g",
+                       pathLength, rgbprint(radiance), misWeight);
                 contribution += throughput * radiance * misWeight;
             }
             break;
@@ -484,6 +487,13 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
     }
 
     plp.s->rngBuffer.write(launchIndex, rng);
+
+    if (!contribution.allNonNegativeFinite()) {
+        printf("%4u, %4u: (%g, %g, %g)\n",
+               launchIndex.x, launchIndex.y, rgbprint(contribution));
+        return;
+    }
+
     RGBSpectrum prevResult = RGBSpectrum::Zero();
     if (plp.f->numAccumFrames > 0)
         prevResult = plp.s->accumBuffer.read(launchIndex);
