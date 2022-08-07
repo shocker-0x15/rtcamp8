@@ -491,10 +491,8 @@ static int32_t runGuiApp() {
     glfwSetWindowUserPointer(window, &frameIndex);
 
     bool enableEnvironmentalLight = false;
-    if (renderConfigs.environment) {
+    if (renderConfigs.environment)
         enableEnvironmentalLight = true;
-        renderConfigs.environment->setUpDeviceData(&perFramePlpOnHost.envLight, renderConfigs.timeBegin);
-    }
 
     uint32_t numAccumFrames = 0;
     float timePoint = renderConfigs.timeBegin;
@@ -775,6 +773,8 @@ static int32_t runGuiApp() {
 
         CUDADRV_CHECK(cuStreamSynchronize(curCuStream));
         cpuTimer.start();
+        if (renderConfigs.environment)
+            renderConfigs.environment->setUpDeviceData(&perFramePlpOnHost.envLight, timePoint);
         g_scene.setUpDeviceDataBuffers(curCuStream, timePoint);
         uint32_t setUpDeviceDataTimeIdx = cpuTimer.stop();
 

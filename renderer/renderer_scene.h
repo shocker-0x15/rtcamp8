@@ -980,16 +980,49 @@ public:
 
 
 
+struct KeyEnvironmentState {
+    float timePoint;
+    float coeff;
+    float rotation;
+};
+
+
+
 class Environment {
 protected:
-    float m_coeff;
-    float m_rotation;
+    std::vector<Ref<KeyEnvironmentState>> m_keyStates;
     uint32_t m_dirty : 1;
 
+    void interpolateStates(
+        float timePoint,
+        float* coeff, float* rotation) const {
+        uint32_t numStates = static_cast<uint32_t>(m_keyStates.size());
+        int idx = 0;
+        for (int d = nextPowerOf2(numStates) >> 1; d >= 1; d >>= 1) {
+            if (idx + d >= numStates)
+                continue;
+            const Ref<KeyEnvironmentState> &keyState = m_keyStates[idx + d];
+            if (keyState->timePoint <= timePoint)
+                idx += d;
+        }
+        const Ref<KeyEnvironmentState> (&states)[2]{
+            m_keyStates[idx],
+            m_keyStates[std::min(static_cast<uint32_t>(idx) + 1, numStates - 1)]
+        };
+        float t = safeDivide(timePoint - states[0]->timePoint, states[1]->timePoint - states[0]->timePoint);
+        *coeff = lerp(states[0]->coeff, states[1]->coeff, t);
+        *rotation = lerp(states[0]->rotation, states[1]->rotation, t);
+    }
+
 public:
-    Environment(float coeff, float rotation) :
-        m_coeff(coeff), m_rotation(rotation), m_dirty(false) {}
+    Environment() :
+        m_dirty(false) {}
     virtual ~Environment() {}
+
+    void setKeyStates(const std::vector<Ref<KeyEnvironmentState>> &states) {
+        m_keyStates = states;
+        m_dirty = true;
+    }
 
     virtual void setUpDeviceData(shared::EnvironmentalLight* deviceData, float timePoint) = 0;
 
@@ -1004,8 +1037,8 @@ class ImageBasedEnvironment : public Environment {
     Ref<Texture2D> m_importanceMap;
 
 public:
-    ImageBasedEnvironment(float coeff, float rotation, const Ref<Texture2D> &image) :
-        Environment(coeff, rotation), m_image(image) {
+    ImageBasedEnvironment(const Ref<Texture2D> &image) :
+        m_image(image) {
         uint32_t width = m_image->getWidth();
         uint32_t height = m_image->getHeight();
         uint32_t dimX = nextPowerOf2(width);
@@ -1022,9 +1055,10 @@ public:
         m_dirty = true;
     }
 
-    void setUpDeviceData(shared::EnvironmentalLight* deviceData, float /*timePoint*/) override {
-        if (!m_dirty)
-            return;
+    void setUpDeviceData(shared::EnvironmentalLight* deviceData, float timePoint) override {
+        float coeff;
+        float rotation;
+        interpolateStates(timePoint, &coeff, &rotation);
 
         auto &body = *reinterpret_cast<shared::ImageBasedEnvironmentalLight*>(deviceData->body);
         body.texObj = m_image->getDeviceTexture();
@@ -1035,10 +1069,8 @@ public:
         body.imageHeight = m_image->getHeight();
         deviceData->envLightSample = CallableProgram_ImageBasedEnvironmentalLight_sample;
         deviceData->envLightEvaluate = CallableProgram_ImageBasedEnvironmentalLight_evaluate;
-        deviceData->powerCoeff = m_coeff;
-        deviceData->rotation = m_rotation;
-
-        m_dirty = false;
+        deviceData->powerCoeff = coeff;
+        deviceData->rotation = rotation * pi_v<float> / 180;
     }
 
     void computeDistribution(
@@ -1172,6 +1204,22 @@ public:
             histogram.unmap();
         }
     }
+};
+
+
+
+struct KeyAnalyticSkyEnvironmentState : public KeyEnvironmentState {
+
+};
+
+
+
+class AnalyticSkyEnvironment : public Environment {
+    cudau::Array m_image;
+    Ref<Texture2D> m_importanceMap;
+
+public:
+
 };
 
 

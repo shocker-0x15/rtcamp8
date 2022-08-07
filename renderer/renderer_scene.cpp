@@ -834,6 +834,8 @@ static void loadEnvironmentalTexture(
 
 
 
+static constexpr bool forceLambertBRDF = false;
+
 static Ref<SurfaceMaterial> createLambertianMaterial(
     const std::filesystem::path &reflectancePath, const RGBSpectrum &immReflectance) {
 
@@ -1032,16 +1034,21 @@ static void loadTriangleMesh(
         else if (aiMat->Get(AI_MATKEY_COLOR_EMISSIVE, color, nullptr) == aiReturn_SUCCESS)
             immEmittance = RGBSpectrum(color[0], color[1], color[2]);
 
-        // JP: diffuseテクスチャーとしてベースカラー + 不透明度
-        //     specularテクスチャーとしてオクルージョン、ラフネス、メタリック
-        //     が格納されていると仮定している。
-        // EN: We assume diffuse texture as base color + opacity,
-        //     specular texture as occlusion, roughness, metallic.
-        //Ref<SurfaceMaterial> surfMat = createSimplePBRMaterial(
-        //    diffuseColorPath, immDiffuseColor, 1.0f,
-        //    specularColorPath, float3(0.0f, 0.5f, 0.0f));
-        Ref<SurfaceMaterial> surfMat = createLambertianMaterial(
-            diffuseColorPath, immDiffuseColor);
+        Ref<SurfaceMaterial> surfMat;
+        if constexpr (forceLambertBRDF) {
+            surfMat = createLambertianMaterial(
+                diffuseColorPath, immDiffuseColor);
+        }
+        else {
+            // JP: diffuseテクスチャーとしてベースカラー + 不透明度
+            //     specularテクスチャーとしてオクルージョン、ラフネス、メタリック
+            //     が格納されていると仮定している。
+            // EN: We assume diffuse texture as base color + opacity,
+            //     specular texture as occlusion, roughness, metallic.
+            surfMat = createSimplePBRMaterial(
+                diffuseColorPath, immDiffuseColor, 1.0f,
+                specularColorPath, float3(0.0f, 0.5f, 0.0f));
+        }
 
         bool needsDegamma;
         bool isHDR;
@@ -1270,6 +1277,35 @@ static std::smatch testRegex(
     return std::move(m);
 }
 
+struct EnvironmentInfo {
+    struct File {
+        std::filesystem::path path;
+    };
+    struct Procedural {
+        float nextKeySolarElevation;
+        float nextKeyTurbidity;
+        float nextGroundAlbedo;
+    };
+
+    std::variant<
+        uint32_t, // dummy
+        File,
+        Procedural
+    > body;
+
+    float nextKeyCoeff;
+    float nextKeyRotation;
+    std::vector<Ref<KeyEnvironmentState>> keyStates;
+};
+
+struct CameraInfo {
+    Point3D nextKeyPosition;
+    Point3D nextKeyLookAt;
+    Vector3D nextKeyUp;
+    float nextKeyFovY;
+    std::vector<KeyCameraState> keyStates;
+};
+
 struct MeshInfo {
     struct File {
         std::filesystem::path path;
@@ -1294,32 +1330,6 @@ struct InstanceInfo {
     Quaternion nextKeyOrientation;
     std::vector<KeyInstanceState> keyStates;
     uint32_t hasCyclicAnim : 1;
-};
-
-struct CameraInfo {
-    Point3D nextKeyPosition;
-    Point3D nextKeyLookAt;
-    Vector3D nextKeyUp;
-    float nextKeyFovY;
-    std::vector<KeyCameraState> keyStates;
-};
-
-struct EnvironmentInfo {
-    struct File {
-        std::filesystem::path path;
-    };
-    struct Procedural {
-
-    };
-
-    std::variant<
-        uint32_t, // dummy
-        File,
-        Procedural
-    > body;
-
-    float coeff;
-    float rotation;
 };
 
 struct SceneLoadingContext {
@@ -1400,15 +1410,15 @@ std::map<std::string, lineFunc> processors = {
             envInfo.path = envFilePath;
             context.envName = envName;
             context.envInfo.body = envInfo;
-            context.envInfo.coeff = 1.0f;
-            context.envInfo.rotation = 0.0f;
+            context.envInfo.nextKeyCoeff = 1.0f;
+            context.envInfo.nextKeyRotation = 0.0f;
         }
     },
     {
-        "env-state",
+        "env-coeff",
         [](SceneLoadingContext &context) {
-            static const char* cmd = "env-state";
-            static const std::regex re = makeRegex({cmd, reString, reReal, reReal });
+            static const char* cmd = "env-coeff";
+            static const std::regex re = makeRegex({cmd, reString, reReal});
             std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
 
             std::string tgtName = m[1].str();
@@ -1422,10 +1432,162 @@ std::map<std::string, lineFunc> processors = {
                 coeff >= 0.0f, context.lineIndex + 1,
                 "Invalid coeff: %f", coeff);
 
-            float rotation = std::stof(m[3].str().c_str());
+            context.envInfo.nextKeyCoeff = coeff;
+        }
+    },
+    {
+        "env-rotation",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "env-rotation";
+            static const std::regex re = makeRegex({cmd, reString, reReal});
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
 
-            context.envInfo.coeff = coeff;
-            context.envInfo.rotation = rotation;
+            std::string tgtName = m[1].str();
+            throwRuntimeErrorAtLine(
+                tgtName == context.envName, context.lineIndex + 1,
+                "Environment %s does not exist.",
+                tgtName.c_str());
+
+            context.envInfo.nextKeyRotation = std::stof(m[2].str().c_str());
+        }
+    },
+    {
+        "env-addkey",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "env-addkey";
+            static const std::regex re = makeRegex({cmd, reString, reReal});
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string tgtName = m[1].str();
+            throwRuntimeErrorAtLine(
+                tgtName == context.envName, context.lineIndex + 1,
+                "Environment %s does not exist.",
+                tgtName.c_str());
+
+            float timePoint = std::stof(m[2].str().c_str());
+            throwRuntimeErrorAtLine(
+                timePoint >= 0.0f, context.lineIndex + 1,
+                "Invalid timePoint: %f", timePoint);
+
+            EnvironmentInfo &envInfo = context.envInfo;
+            if (std::holds_alternative<EnvironmentInfo::File>(envInfo.body)) {
+                auto &fileInfo = std::get<EnvironmentInfo::File>(envInfo.body);
+                auto state = std::make_shared<KeyEnvironmentState>();
+                state->timePoint = timePoint;
+                state->coeff = envInfo.nextKeyCoeff;
+                state->rotation = envInfo.nextKeyRotation;
+                envInfo.keyStates.push_back(state);
+            }
+            else if (std::holds_alternative<EnvironmentInfo::Procedural>(envInfo.body)) {
+                auto &fileInfo = std::get<EnvironmentInfo::Procedural>(envInfo.body);
+                auto state = std::make_shared<KeyAnalyticSkyEnvironmentState>();
+                state->timePoint = timePoint;
+                state->coeff = envInfo.nextKeyCoeff;
+                state->rotation = envInfo.nextKeyRotation;
+                envInfo.keyStates.push_back(state);
+            }
+        }
+    },
+    {
+        "camera",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "camera";
+            static const std::regex re = makeRegex({cmd, reString});
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string camName = m[1].str();
+            throwRuntimeErrorAtLine(
+                !context.camInfos.contains(camName), context.lineIndex + 1,
+                "Camera %s has been already created.",
+                camName.c_str());
+            throwRuntimeErrorAtLine(
+                !context.instInfos.contains(camName), context.lineIndex + 1,
+                "Instance with the same name %s exists.",
+                camName.c_str());
+
+            CameraInfo camInfo;
+            camInfo.nextKeyPosition = Point3D(0, 1, 5);
+            camInfo.nextKeyLookAt = Point3D(0, 0, 0);
+            camInfo.nextKeyUp = Vector3D(0, 1, 0);
+            camInfo.nextKeyFovY = 60 * pi_v<float> / 180;
+            context.camInfos[camName] = camInfo;
+        }
+    },
+    {
+        "fovy",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "fovy";
+            static const std::regex re = makeRegex({cmd, reString, reReal});
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string camName = m[1].str();
+            throwRuntimeErrorAtLine(
+                context.camInfos.contains(camName), context.lineIndex + 1,
+                "Camera %s does not exist.",
+                camName.c_str());
+
+            float fovY = std::stof(m[2].str().c_str());
+            throwRuntimeErrorAtLine(
+                fovY > 0.0f, context.lineIndex + 1,
+                "Invalid fovY: %f", fovY);
+
+            context.camInfos.at(camName).nextKeyFovY = fovY;
+        }
+    },
+    {
+        "lookat",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "lookat";
+            static const std::regex re = makeRegex({
+                cmd, reString, reReal, reReal, reReal, reReal, reReal, reReal, reReal, reReal, reReal });
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string camName = m[1].str();
+            throwRuntimeErrorAtLine(
+                context.camInfos.contains(camName), context.lineIndex + 1,
+                "Camera %s does not exist.",
+                camName.c_str());
+
+            context.camInfos.at(camName).nextKeyPosition = Point3D(
+                std::stof(m[2].str().c_str()),
+                std::stof(m[3].str().c_str()),
+                std::stof(m[4].str().c_str()));
+            context.camInfos.at(camName).nextKeyLookAt = Point3D(
+                std::stof(m[5].str().c_str()),
+                std::stof(m[6].str().c_str()),
+                std::stof(m[7].str().c_str()));
+            context.camInfos.at(camName).nextKeyUp = Vector3D(
+                std::stof(m[8].str().c_str()),
+                std::stof(m[9].str().c_str()),
+                std::stof(m[10].str().c_str()));
+        }
+    },
+    {
+        "cam-addkey",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "cam-addkey";
+            static const std::regex re = makeRegex({cmd, reString, reReal, reString, reString});
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string tgtName = m[1].str();
+            throwRuntimeErrorAtLine(
+                context.camInfos.contains(tgtName), context.lineIndex + 1,
+                "Camera %s does not exist.",
+                tgtName.c_str());
+
+            float timePoint = std::stof(m[2].str().c_str());
+            throwRuntimeErrorAtLine(
+                timePoint >= 0.0f, context.lineIndex + 1,
+                "Invalid timePoint: %f", timePoint);
+
+            CameraInfo &camInfo = context.camInfos.at(tgtName);
+            KeyCameraState state;
+            state.timePoint = timePoint;
+            state.position = camInfo.nextKeyPosition;
+            state.positionLookAt = camInfo.nextKeyLookAt;
+            state.up = camInfo.nextKeyUp;
+            state.fovY = camInfo.nextKeyFovY;
+            camInfo.keyStates.push_back(state);
         }
     },
     {
@@ -1544,31 +1706,6 @@ std::map<std::string, lineFunc> processors = {
         }
     },
     {
-        "camera",
-        [](SceneLoadingContext &context) {
-            static const char* cmd = "camera";
-            static const std::regex re = makeRegex({cmd, reString});
-            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
-
-            std::string camName = m[1].str();
-            throwRuntimeErrorAtLine(
-                !context.camInfos.contains(camName), context.lineIndex + 1,
-                "Camera %s has been already created.",
-                camName.c_str());
-            throwRuntimeErrorAtLine(
-                !context.instInfos.contains(camName), context.lineIndex + 1,
-                "Instance with the same name %s exists.",
-                camName.c_str());
-
-            CameraInfo camInfo;
-            camInfo.nextKeyPosition = Point3D(0, 1, 5);
-            camInfo.nextKeyLookAt = Point3D(0, 0, 0);
-            camInfo.nextKeyUp = Vector3D(0, 1, 0);
-            camInfo.nextKeyFovY = 60 * pi_v<float> / 180;
-            context.camInfos[camName] = camInfo;
-        }
-    },
-    {
         "scale",
         [](SceneLoadingContext &context) {
             static const char* cmd = "scale";
@@ -1626,67 +1763,16 @@ std::map<std::string, lineFunc> processors = {
         }
     },
     {
-        "fovy",
+        "inst-addkey",
         [](SceneLoadingContext &context) {
-            static const char* cmd = "fovy";
-            static const std::regex re = makeRegex({cmd, reString, reReal});
-            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
-
-            std::string camName = m[1].str();
-            throwRuntimeErrorAtLine(
-                context.camInfos.contains(camName), context.lineIndex + 1,
-                "Camera %s does not exist.",
-                camName.c_str());
-
-            float fovY = std::stof(m[2].str().c_str());
-            throwRuntimeErrorAtLine(
-                fovY > 0.0f, context.lineIndex + 1,
-                "Invalid fovY: %f", fovY);
-
-            context.camInfos.at(camName).nextKeyFovY = fovY;
-        }
-    },
-    {
-        "lookat",
-        [](SceneLoadingContext &context) {
-            static const char* cmd = "lookat";
-            static const std::regex re = makeRegex({
-                cmd, reString, reReal, reReal, reReal, reReal, reReal, reReal, reReal, reReal, reReal });
-            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
-
-            std::string camName = m[1].str();
-            throwRuntimeErrorAtLine(
-                context.camInfos.contains(camName), context.lineIndex + 1,
-                "Camera %s does not exist.",
-                camName.c_str());
-
-            context.camInfos.at(camName).nextKeyPosition = Point3D(
-                std::stof(m[2].str().c_str()),
-                std::stof(m[3].str().c_str()),
-                std::stof(m[4].str().c_str()));
-            context.camInfos.at(camName).nextKeyLookAt = Point3D(
-                std::stof(m[5].str().c_str()),
-                std::stof(m[6].str().c_str()),
-                std::stof(m[7].str().c_str()));
-            context.camInfos.at(camName).nextKeyUp = Vector3D(
-                std::stof(m[8].str().c_str()),
-                std::stof(m[9].str().c_str()),
-                std::stof(m[10].str().c_str()));
-        }
-    },
-    {
-        "addkey",
-        [](SceneLoadingContext &context) {
-            static const char* cmd = "addkey";
+            static const char* cmd = "inst-addkey";
             static const std::regex re = makeRegex({cmd, reString, reReal, reString, reString});
             std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
 
             std::string tgtName = m[1].str();
-            bool isInst = context.instInfos.contains(tgtName);
-            bool isCam = context.camInfos.contains(tgtName);
             throwRuntimeErrorAtLine(
-                isInst || isCam, context.lineIndex + 1,
-                "Instance/Camera %s does not exist.",
+                context.instInfos.contains(tgtName), context.lineIndex + 1,
+                "Instance %s does not exist.",
                 tgtName.c_str());
 
             float timePoint = std::stof(m[2].str().c_str());
@@ -1694,25 +1780,13 @@ std::map<std::string, lineFunc> processors = {
                 timePoint >= 0.0f, context.lineIndex + 1,
                 "Invalid timePoint: %f", timePoint);
 
-            if (isInst) {
-                InstanceInfo &instInfo = context.instInfos.at(tgtName);
-                KeyInstanceState state;
-                state.timePoint = timePoint;
-                state.scale = instInfo.nextKeyScale;
-                state.orientation = instInfo.nextKeyOrientation;
-                state.position = instInfo.nextKeyPosition;
-                instInfo.keyStates.push_back(state);
-            }
-            else {
-                CameraInfo &camInfo = context.camInfos.at(tgtName);
-                KeyCameraState state;
-                state.timePoint = timePoint;
-                state.position = camInfo.nextKeyPosition;
-                state.positionLookAt = camInfo.nextKeyLookAt;
-                state.up = camInfo.nextKeyUp;
-                state.fovY = camInfo.nextKeyFovY;
-                camInfo.keyStates.push_back(state);
-            }
+            InstanceInfo &instInfo = context.instInfos.at(tgtName);
+            KeyInstanceState state;
+            state.timePoint = timePoint;
+            state.scale = instInfo.nextKeyScale;
+            state.orientation = instInfo.nextKeyOrientation;
+            state.position = instInfo.nextKeyPosition;
+            instInfo.keyStates.push_back(state);
         }
     },
     {
@@ -1799,15 +1873,25 @@ void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* render
 
     // JP: 環境光源を生成する。
     if (!context.envName.empty()) {
+        std::vector<Ref<KeyEnvironmentState>> states = std::move(context.envInfo.keyStates);
+        std::sort(
+            states.begin(), states.end(),
+            [](const Ref<KeyEnvironmentState> &a, const Ref<KeyEnvironmentState> &b) {
+                return a->timePoint < b->timePoint;
+            });
+
         if (std::holds_alternative<EnvironmentInfo::File>(context.envInfo.body)) {
             const auto &fileInfo = std::get<EnvironmentInfo::File>(context.envInfo.body);
             Ref<cudau::Array> envArray;
             loadEnvironmentalTexture(fileInfo.path, g_gpuEnv.cuContext, &envArray);
             auto envTex = std::make_shared<Texture2D>(envArray);
             envTex->setReadMode(cudau::TextureReadMode::ElementType);
-            auto env = std::make_shared<ImageBasedEnvironment>(
-                context.envInfo.coeff, context.envInfo.rotation, envTex);
+            auto env = std::make_shared<ImageBasedEnvironment>(envTex);
+            env->setKeyStates(states);
             renderConfigs->environment = env;
+        }
+        else if (std::holds_alternative<EnvironmentInfo::Procedural>(context.envInfo.body)) {
+
         }
     }
 
