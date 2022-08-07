@@ -965,6 +965,29 @@ struct ImageBasedEnvironmentalLight {
 
 
 
+typedef float ArHosekSkyModelConfiguration[9];
+
+struct ArHosekSkyModelState {
+    ArHosekSkyModelConfiguration configs[11];
+    float radiances[11];
+    float turbidity;
+    float solar_radius;
+    float emission_correction_factor_sky[11];
+    float emission_correction_factor_sun[11];
+    float albedo;
+    float elevation;
+};
+
+struct ArHosekSkyModelCMFSet {
+    static constexpr uint32_t numBands = 16;
+    float xs[numBands];
+    float ys[numBands];
+    float zs[numBands];
+    float centerWavelengths[numBands];
+    float integralCmf;
+};
+
+
 
 struct EnvironmentalLight {
     uint32_t body[sizeof(ImageBasedEnvironmentalLight) / sizeof(uint32_t)];

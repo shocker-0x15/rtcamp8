@@ -7,10 +7,198 @@
 #include "../ext/stb_image.h"
 #include "tinyexr.h"
 
+extern "C" {
+#include "../ext/hosek_wilkie_2013/ArHosekSkyModel.h"
+    double* solarDatasets[];
+    double* limbDarkeningDatasets[];
+}
+
 namespace rtc8 {
 
 GPUEnvironment g_gpuEnv;
 Scene g_scene;
+
+
+
+void GPUEnvironment::initialize() {
+    const std::filesystem::path exeDir = getExecutableDirectory();
+
+    CUDADRV_CHECK(cuInit(0));
+    CUDADRV_CHECK(cuCtxCreate(&cuContext, 0, 0));
+    CUDADRV_CHECK(cuCtxSetCurrent(cuContext));
+
+    optixContext = optixu::Context::create(cuContext/*, 4, DEBUG_SELECT(true, false)*/);
+
+
+
+    size_t symbolSize;
+
+    CUDADRV_CHECK(cuModuleLoad(
+        &postProcessKernelsModule,
+        (exeDir / "renderer/ptxes/post_process_kernels.ptx").string().c_str()));
+    applyToneMap.set(postProcessKernelsModule, "applyToneMap", cudau::dim3(8, 8), 0);
+    CUDADRV_CHECK(cuModuleGetGlobal(
+        &plpForPostProcessKernelsModule, &symbolSize, postProcessKernelsModule, "plp"));
+
+    CUDADRV_CHECK(cuModuleLoad(
+        &computeLightProbs.cudaModule,
+        (exeDir / "renderer/ptxes/compute_light_probs.ptx").string().c_str()));
+    computeLightProbs.initializeWorldDimInfo.set(
+        computeLightProbs.cudaModule, "initializeWorldDimInfo", cudau::dim3(32), 0);
+    computeLightProbs.finalizeWorldDimInfo.set(
+        computeLightProbs.cudaModule, "finalizeWorldDimInfo", cudau::dim3(32), 0);
+    computeLightProbs.computeTriangleProbBuffer.set(
+        computeLightProbs.cudaModule, "computeTriangleProbBuffer", cudau::dim3(32), 0);
+    computeLightProbs.computeGeomInstProbBuffer.set(
+        computeLightProbs.cudaModule, "computeGeomInstProbBuffer", cudau::dim3(32), 0);
+    computeLightProbs.computeInstProbBuffer.set(
+        computeLightProbs.cudaModule, "computeInstProbBuffer", cudau::dim3(32), 0);
+    computeLightProbs.finalizeDiscreteDistribution1D.set(
+        computeLightProbs.cudaModule, "finalizeDiscreteDistribution1D", cudau::dim3(32), 0);
+    computeLightProbs.computeFirstMipOfEnvIBLImportanceMap.set(
+        computeLightProbs.cudaModule, "computeFirstMipOfEnvIBLImportanceMap", cudau::dim3(32), 0);
+    computeLightProbs.computeMipOfImportanceMap.set(
+        computeLightProbs.cudaModule, "computeMipOfImportanceMap", cudau::dim3(32), 0);
+    computeLightProbs.testImportanceMap.set(
+        computeLightProbs.cudaModule, "testImportanceMap", cudau::dim3(32), 0);
+
+    CUDADRV_CHECK(cuModuleLoad(
+        &arHosekSkyModel.cudaModule,
+        (exeDir / "renderer/ptxes/analytic_sky_kernels.ptx").string().c_str()));
+    arHosekSkyModel.generateArHosekSkyEnvironmentalTexture.set(
+        arHosekSkyModel.cudaModule, "generateArHosekSkyEnvironmentalTexture", cudau::dim3(8, 8), 0);
+    CUDADRV_CHECK(cuModuleGetGlobal(
+        &arHosekSkyModel.statesOnDevice, &symbolSize, arHosekSkyModel.cudaModule, "states"));
+    CUDADRV_CHECK(cuModuleGetGlobal(
+        &arHosekSkyModel.cmfSetOnDevice, &symbolSize, arHosekSkyModel.cudaModule, "cmfSet"));
+    CUDADRV_CHECK(cuModuleGetGlobal(
+        &arHosekSkyModel.solarDatasetsOnDevice, &symbolSize, arHosekSkyModel.cudaModule,
+        "solarDatasets"));
+    CUDADRV_CHECK(cuModuleGetGlobal(
+        &arHosekSkyModel.limbDarkeningDatasetsOnDevice, &symbolSize, arHosekSkyModel.cudaModule,
+        "limbDarkeningDatasets"));
+    {
+        computeDiscretizedXyzCmfs(
+            shared::ArHosekSkyModelCMFSet::numBands,
+            arHosekSkyModel.cmfSetOnHost.centerWavelengths,
+            arHosekSkyModel.cmfSetOnHost.xs,
+            arHosekSkyModel.cmfSetOnHost.ys,
+            arHosekSkyModel.cmfSetOnHost.zs,
+            &arHosekSkyModel.cmfSetOnHost.integralCmf);
+        CUDADRV_CHECK(cuMemcpyHtoD(
+            arHosekSkyModel.cmfSetOnDevice,
+            &arHosekSkyModel.cmfSetOnHost, sizeof(arHosekSkyModel.cmfSetOnHost)));
+
+        constexpr uint32_t numWLs = 11;
+        constexpr uint32_t numElemsPerSolarDataset = 1800;
+        constexpr uint32_t numElemsPerLimbDarkeningDataset = 6;
+        arHosekSkyModel.solarDatasets.initialize(
+            g_gpuEnv.cuContext, bufferType, numWLs * numElemsPerSolarDataset);
+        arHosekSkyModel.limbDarkeningDatasets.initialize(
+            g_gpuEnv.cuContext, bufferType, numWLs * numElemsPerLimbDarkeningDataset);
+        {
+            float* solarDatasetsOnHost = arHosekSkyModel.solarDatasets.map();
+            for (int wlIdx = 0; wlIdx < numWLs; ++wlIdx) {
+                for (int i = 0; i < numElemsPerSolarDataset; ++i) {
+                    solarDatasetsOnHost[numElemsPerSolarDataset * wlIdx + i] =
+                        static_cast<float>(solarDatasets[wlIdx][i]);
+                }
+            }
+            arHosekSkyModel.solarDatasets.unmap();
+
+            float* limbDarkeningDatasetsOnHost = arHosekSkyModel.limbDarkeningDatasets.map();
+            for (int wlIdx = 0; wlIdx < numWLs; ++wlIdx) {
+                for (int i = 0; i < numElemsPerLimbDarkeningDataset; ++i) {
+                    limbDarkeningDatasetsOnHost[numElemsPerLimbDarkeningDataset * wlIdx + i] =
+                        static_cast<float>(limbDarkeningDatasets[wlIdx][i]);
+                }
+            }
+            arHosekSkyModel.limbDarkeningDatasets.unmap();
+
+            CUdeviceptr devicePtr;
+            devicePtr = arHosekSkyModel.solarDatasets.getCUdeviceptr();
+            CUDADRV_CHECK(cuMemcpyHtoD(
+                arHosekSkyModel.solarDatasetsOnDevice,
+                &devicePtr, sizeof(devicePtr)));
+            devicePtr = arHosekSkyModel.limbDarkeningDatasets.getCUdeviceptr();
+            CUDADRV_CHECK(cuMemcpyHtoD(
+                arHosekSkyModel.limbDarkeningDatasetsOnDevice,
+                &devicePtr, sizeof(devicePtr)));
+        }
+    }
+
+
+
+    optixDefaultMaterial = optixContext.createMaterial();
+
+    optixu::Module emptyModule;
+
+    {
+        Pipeline<PathTracingEntryPoint> &pipeline = pathTracing;
+        optixu::Pipeline &p = pipeline.optixPipeline;
+        optixu::Module &m = pipeline.optixModule;
+        p = optixContext.createPipeline();
+
+        p.setPipelineOptions(
+            std::max({
+                shared::ClosestRaySignature::numDwords,
+                shared::VisibilityRaySignature::numDwords
+                     }),
+            optixu::calcSumDwords<float2>(),
+            "plp", sizeof(shared::PipelineLaunchParameters),
+            false, OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING,
+            OPTIX_EXCEPTION_FLAG_STACK_OVERFLOW | OPTIX_EXCEPTION_FLAG_TRACE_DEPTH |
+            /*DEBUG_SELECT(OPTIX_EXCEPTION_FLAG_DEBUG, */OPTIX_EXCEPTION_FLAG_NONE/*)*/,
+            OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE);
+
+        m = p.createModuleFromPTXString(
+            readTxtFile(getExecutableDirectory() / "renderer/ptxes/optix_pathtracing_kernels.ptx"),
+            OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT,
+            /*DEBUG_SELECT(OPTIX_COMPILE_OPTIMIZATION_LEVEL_0, */OPTIX_COMPILE_OPTIMIZATION_DEFAULT/*)*/,
+            /*DEBUG_SELECT(OPTIX_COMPILE_DEBUG_LEVEL_FULL, */OPTIX_COMPILE_DEBUG_LEVEL_NONE/*)*/);
+
+        pipeline.entryPoints[PathTracingEntryPoint::pathTrace] =
+            p.createRayGenProgram(m, RT_RG_NAME_STR("pathTrace"));
+
+        optixu::ProgramGroup chPathTrace = p.createHitProgramGroupForTriangleIS(
+            m, RT_CH_NAME_STR("pathTrace"),
+            emptyModule, nullptr);
+        pipeline.programs[RT_CH_NAME_STR("pathTrace")] = chPathTrace;
+
+        optixu::ProgramGroup ahVisibility = p.createHitProgramGroupForTriangleIS(
+            emptyModule, nullptr,
+            m, RT_AH_NAME_STR("visibility"));
+        pipeline.programs[RT_AH_NAME_STR("visibility")] = ahVisibility;
+
+        optixu::ProgramGroup emptyMiss = p.createMissProgram(emptyModule, nullptr);
+        pipeline.programs["emptyMiss"] = emptyMiss;
+
+        p.setNumMissRayTypes(shared::PathTracingRayType::NumTypes);
+        p.setMissProgram(shared::PathTracingRayType::Closest, emptyMiss);
+        p.setMissProgram(shared::PathTracingRayType::Visibility, emptyMiss);
+
+        p.setNumCallablePrograms(NumCallablePrograms);
+        pipeline.callablePrograms.resize(NumCallablePrograms);
+        for (int i = 0; i < NumCallablePrograms; ++i) {
+            optixu::ProgramGroup program = p.createCallableProgramGroup(
+                m, callableProgramEntryPoints[i],
+                emptyModule, nullptr);
+            pipeline.callablePrograms[i] = program;
+            p.setCallableProgram(i, program);
+        }
+
+        p.link(1, /*DEBUG_SELECT(OPTIX_COMPILE_DEBUG_LEVEL_FULL, */OPTIX_COMPILE_DEBUG_LEVEL_NONE/*)*/);
+
+        optixDefaultMaterial.setHitGroup(shared::PathTracingRayType::Closest, chPathTrace);
+        optixDefaultMaterial.setHitGroup(shared::PathTracingRayType::Visibility, ahVisibility);
+
+        size_t sbtSize;
+        p.generateShaderBindingTableLayout(&sbtSize);
+        pipeline.sbt.initialize(cuContext, bufferType, sbtSize, 1);
+        pipeline.sbt.setMappedMemoryPersistent(true);
+        p.setShaderBindingTable(pipeline.sbt, pipeline.sbt.getMappedPointer());
+    }
+}
 
 
 
@@ -281,6 +469,70 @@ void Scene::checkLightInstDistribution(CUdeviceptr lightInstDistAddr) {
 uint32_t LambertianSurfaceMaterial::s_procSetSlot;
 
 uint32_t SimplePBRSurfaceMaterial::s_procSetSlot;
+
+
+
+void AnalyticSkyEnvironment::computeDistribution(
+    CUstream stream, CUdeviceptr envLightAddr, float timePoint) {
+    std::vector<Ref<KeyEnvironmentState>> controlPoints;
+    float t;
+    getControlPoints(timePoint, &controlPoints, &t);
+
+    float coeff;
+    float rotation;
+    Environment::interpolateStates(controlPoints, t, &coeff, &rotation);
+
+    Vector3D solarDirection;
+    float turbidity;
+    RGBSpectrum groundAlbedo;
+    interpolateStates(controlPoints, t, &solarDirection, &turbidity, &groundAlbedo);
+
+    float solarElevation = 0.5f * pi_v<float> - std::acos(clamp(solarDirection.y, -1.0f, 1.0f));
+    const shared::ArHosekSkyModelCMFSet &cmfSet = g_gpuEnv.arHosekSkyModel.cmfSetOnHost;
+    const uint32_t numBands = shared::ArHosekSkyModelCMFSet::numBands;
+    std::vector<shared::ArHosekSkyModelState> fStates(numBands);
+    for (int bandIdx = 0; bandIdx < numBands; ++bandIdx) {
+        float centerWL = cmfSet.centerWavelengths[bandIdx];
+        float albedo = 0.5f * (1 - (bandIdx + 0.5f) / numBands);
+        ArHosekSkyModelState* state = arhosekskymodelstate_alloc_init(
+            solarElevation, turbidity, albedo);
+        shared::ArHosekSkyModelState &fState = fStates[bandIdx];
+        for (int i = 0; i < lengthof(fState.configs); ++i) {
+            for (int j = 0; j < lengthof(fState.configs[i]); ++j)
+                fState.configs[i][j] = static_cast<float>(state->configs[i][j]);
+            fState.radiances[i] = state->radiances[i];
+            fState.emission_correction_factor_sky[i] = state->emission_correction_factor_sky[i];
+            fState.emission_correction_factor_sun[i] = state->emission_correction_factor_sun[i];
+        }
+        fState.turbidity = state->turbidity;
+        fState.solar_radius = state->solar_radius;
+        fState.albedo = state->albedo;
+        fState.elevation = state->elevation;
+        arhosekskymodelstate_free(state);
+    }
+    CUDADRV_CHECK(cuMemcpyHtoDAsync(
+        g_gpuEnv.arHosekSkyModel.statesOnDevice,
+        fStates.data(), sizeof(fStates[0]) * fStates.size(),
+        stream));
+
+    uint2 imageSize(m_image->getWidth(), m_image->getHeight());
+
+    g_gpuEnv.arHosekSkyModel.generateArHosekSkyEnvironmentalTexture.launchWithThreadDim(
+        stream, cudau::dim3(imageSize.x, imageSize.y),
+        m_image->getSurfaceObject(0), imageSize, solarDirection);
+    constexpr bool outputSkyEnv = false;
+    if constexpr (outputSkyEnv) {
+        CUDADRV_CHECK(cuStreamSynchronize(0));
+        uint32_t width = m_image->getWidth();
+        uint32_t height = m_image->getHeight();
+        float4* data = m_image->getCudaArray()->map<float4>();
+        saveImageHDR("skyenv.exr", width, height, 1.0f, data, false);
+        m_image->getCudaArray()->unmap();
+    }
+
+    CUdeviceptr impMapAddr = envLightAddr + offsetof(shared::ImageBasedEnvironmentalLight, importanceMap);
+    computeImportanceMap(stream, m_image, m_importanceMap, impMapAddr);
+}
 
 
 
@@ -817,7 +1069,7 @@ static void loadEnvironmentalTexture(
         Ref<cudau::Array> cudaArray = std::make_shared<cudau::Array>();
         cudaArray->initialize2D(
             cuContext, cudau::ArrayElementType::Float32, 4,
-            cudau::ArraySurface::Disable, cudau::ArrayTextureGather::Disable,
+            cudau::ArraySurface::Enable, cudau::ArrayTextureGather::Disable,
             width, height, 1);
         cudaArray->write(textureData, width * height * 4);
 
@@ -1281,16 +1533,15 @@ struct EnvironmentInfo {
     struct File {
         std::filesystem::path path;
     };
-    struct Procedural {
-        float nextKeySolarElevation;
+    struct AnalyticSky {
+        Vector3D nextKeySolarDirection;
         float nextKeyTurbidity;
-        float nextGroundAlbedo;
     };
 
     std::variant<
         uint32_t, // dummy
         File,
-        Procedural
+        AnalyticSky
     > body;
 
     float nextKeyCoeff;
@@ -1415,6 +1666,28 @@ std::map<std::string, lineFunc> processors = {
         }
     },
     {
+        "skyenv",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "skyenv";
+            static const std::regex re = makeRegex({cmd, reString});
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string envName = m[1].str();
+            throwRuntimeErrorAtLine(
+                !context.meshInfos.contains(envName), context.lineIndex + 1,
+                "Mesh %s has been already created.",
+                envName.c_str());
+
+            EnvironmentInfo::AnalyticSky envInfo;
+            envInfo.nextKeySolarDirection = Vector3D::fromPolarYUp(0.5f * pi_v<float>, pi_v<float> / 3);
+            envInfo.nextKeyTurbidity = 4;
+            context.envName = envName;
+            context.envInfo.body = envInfo;
+            context.envInfo.nextKeyCoeff = 1.0f;
+            context.envInfo.nextKeyRotation = 0.0f;
+        }
+    },
+    {
         "env-coeff",
         [](SceneLoadingContext &context) {
             static const char* cmd = "env-coeff";
@@ -1433,6 +1706,30 @@ std::map<std::string, lineFunc> processors = {
                 "Invalid coeff: %f", coeff);
 
             context.envInfo.nextKeyCoeff = coeff;
+        }
+    },
+    {
+        "skyenv-dir",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "skyenv-dir";
+            static const std::regex re = makeRegex({cmd, reString, reReal, reReal });
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string tgtName = m[1].str();
+            throwRuntimeErrorAtLine(
+                tgtName == context.envName, context.lineIndex + 1,
+                "Environment %s does not exist.",
+                tgtName.c_str());
+            EnvironmentInfo &envInfo = context.envInfo;
+            throwRuntimeErrorAtLine(
+                std::holds_alternative<EnvironmentInfo::AnalyticSky>(envInfo.body), context.lineIndex + 1,
+                "Elevation cannot be assigned to this environment.",
+                tgtName);
+
+            auto &skyInfo = std::get<EnvironmentInfo::AnalyticSky>(envInfo.body);
+            skyInfo.nextKeySolarDirection = Vector3D::fromPolarYUp(
+                std::stof(m[2].str().c_str()) * pi_v<float> / 180,
+                std::stof(m[3].str().c_str()) * pi_v<float> / 180);
         }
     },
     {
@@ -1478,12 +1775,14 @@ std::map<std::string, lineFunc> processors = {
                 state->rotation = envInfo.nextKeyRotation;
                 envInfo.keyStates.push_back(state);
             }
-            else if (std::holds_alternative<EnvironmentInfo::Procedural>(envInfo.body)) {
-                auto &fileInfo = std::get<EnvironmentInfo::Procedural>(envInfo.body);
+            else if (std::holds_alternative<EnvironmentInfo::AnalyticSky>(envInfo.body)) {
+                auto &skyInfo = std::get<EnvironmentInfo::AnalyticSky>(envInfo.body);
                 auto state = std::make_shared<KeyAnalyticSkyEnvironmentState>();
                 state->timePoint = timePoint;
                 state->coeff = envInfo.nextKeyCoeff;
                 state->rotation = envInfo.nextKeyRotation;
+                state->solarDirection = skyInfo.nextKeySolarDirection;
+                state->turbidity = skyInfo.nextKeyTurbidity;
                 envInfo.keyStates.push_back(state);
             }
         }
@@ -1890,8 +2189,11 @@ void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* render
             env->setKeyStates(states);
             renderConfigs->environment = env;
         }
-        else if (std::holds_alternative<EnvironmentInfo::Procedural>(context.envInfo.body)) {
-
+        else if (std::holds_alternative<EnvironmentInfo::AnalyticSky>(context.envInfo.body)) {
+            const auto &skyInfo = std::get<EnvironmentInfo::AnalyticSky>(context.envInfo.body);
+            auto env = std::make_shared<AnalyticSkyEnvironment>(uint2(3200, 1600));
+            env->setKeyStates(states);
+            renderConfigs->environment = env;
         }
     }
 

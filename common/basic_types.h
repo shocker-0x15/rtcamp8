@@ -2943,6 +2943,19 @@ struct RGBTemplate {
     CUDA_COMMON_FUNCTION CUDA_INLINE static constexpr RGBTemplate NaN() {
         return RGBTemplate(NAN, NAN, NAN);
     }
+    CUDA_COMMON_FUNCTION CUDA_INLINE static constexpr RGBTemplate fromXYZ(RealType xyz[3]) {
+        RGBTemplate ret(
+            static_cast<RealType>(3.2404542) * xyz[0] +
+            static_cast<RealType>(-1.5371385) * xyz[1] +
+            static_cast<RealType>(-0.4985314) * xyz[2],
+            static_cast<RealType>(-0.9692660) * xyz[0] +
+            static_cast<RealType>(1.8760108) * xyz[1] +
+            static_cast<RealType>(0.0415560) * xyz[2],
+            static_cast<RealType>(0.0556434) * xyz[0] +
+            static_cast<RealType>(-0.2040259) * xyz[1] +
+            static_cast<RealType>(1.0572252) * xyz[2]);
+        return ret;
+    }
 };
 
 template <typename RealType>
@@ -3078,5 +3091,16 @@ CUDA_COMMON_FUNCTION CUDA_INLINE RGBTemplate<RealType> sRGB_degamma(
         sRGB_degamma_s(value.g),
         sRGB_degamma_s(value.b));
 }
+
+
+
+extern const float xbar_CIE1931_deg2[];
+extern const float ybar_CIE1931_deg2[];
+extern const float zbar_CIE1931_deg2[];
+
+void computeDiscretizedXyzCmfs(
+    uint32_t numBands,
+    float* centerWavelengths,
+    float* xs, float* ys, float* zs, float* integralCmf);
 
 } // namespace rtc8

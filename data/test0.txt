@@ -2,13 +2,21 @@ image 1920 1080
 time 0 10 60
 
 //envmap "C:\Users\shocker_0x15\repos\assets\IBLs\WhiteOne.exr" env
-envmap "C:\Users\shocker_0x15\repos\assets\IBLs\sIBL_archive\Malibu_Overlook_3k_corrected.exr" env
-env-coeff env 1.0
-env-rotation env 0.0
-//analytic-skyenv env
-//add-analytic-skyenv-state 90 2 0.4
+
+//envmap "C:\Users\shocker_0x15\repos\assets\IBLs\sIBL_archive\Malibu_Overlook_3k_corrected.exr" env
+//env-coeff env 1.0
+//env-rotation env 0.0
+//env-addkey env 0.0
+//env-rotation env 360.0
+//env-addkey env 10.0
+
+skyenv env
+env-coeff env 5
+skyenv-dir env 85 85
 env-addkey env 0.0
-env-rotation env 360.0
+skyenv-dir env 0 10
+env-addkey env 5.0
+skyenv-dir env -85 85
 env-addkey env 10.0
 
 mesh "C:/Users/shocker_0x15/repos/assets/CornellBox_RB/Cornell_box_RB1.obj" 1.0 cornell_box
@@ -18,11 +26,11 @@ trans cornell_box_inst 0.0 0.0 0.0
 scale cornell_box_inst 1.0
 rotate cornell_box_inst 0.0 1.0 0.0 0.0
 inst-addkey cornell_box_inst 0.0 false false
-rotate cornell_box_inst 0.0 1.0 0.0 180.0
-inst-addkey cornell_box_inst 2.5 false false
-rotate cornell_box_inst 0.0 1.0 0.0 360.0
-inst-addkey cornell_box_inst 5.0 false false
-cyclic cornell_box_inst
+//rotate cornell_box_inst 0.0 1.0 0.0 180.0
+//inst-addkey cornell_box_inst 2.5 false false
+//rotate cornell_box_inst 0.0 1.0 0.0 360.0
+//inst-addkey cornell_box_inst 5.0 false false
+//cyclic cornell_box_inst
 
 //rect 0.5 0.5 rectlight
 //emittance rectlight 100 100 100

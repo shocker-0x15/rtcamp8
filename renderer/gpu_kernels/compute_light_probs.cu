@@ -153,7 +153,7 @@ CUDA_DEVICE_KERNEL void finalizeWorldDimInfo(
 
 
 CUDA_DEVICE_KERNEL void computeFirstMipOfEnvIBLImportanceMap(
-    CUtexObject envMap, uint2 imageSize,
+    optixu::NativeBlockBuffer2D<float4> envMap, uint2 imageSize,
     HierarchicalImportanceMap* impMap, optixu::NativeBlockBuffer2D<float> dstMip) {
     uint2 pix = make_uint2(blockDim.x * blockIdx.x + threadIdx.x,
                            blockDim.y * blockIdx.y + threadIdx.y);
@@ -163,11 +163,9 @@ CUDA_DEVICE_KERNEL void computeFirstMipOfEnvIBLImportanceMap(
         return;
     if (pix == make_uint2(0, 0))
         impMap->setDimensions(make_uint2(mapDimX, mapDimY));
-    float2 tc = make_float2((pix.x + 0.5f) / imageSize.x,
-                            (pix.y + 0.5f) / imageSize.y);
     float importance = 0.0f;
     if (pix.x < imageSize.x && pix.y < imageSize.y) {
-        float4 texValue = tex2DLod<float4>(envMap, tc.x, tc.y, 0.0f);
+        float4 texValue = envMap.read(pix);
         RGBSpectrum radiance(texValue.x, texValue.y, texValue.z);
         float correction = pi_v<float> / 2 * std::sin(pi_v<float> * (pix.y + 0.5f) / imageSize.y);
         importance = radiance.luminance() * correction;

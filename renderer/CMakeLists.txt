@@ -8,6 +8,7 @@ set(
     CUDA_KERNELS
     "gpu_kernels/post_process_kernels.cu"
     "gpu_kernels/compute_light_probs.cu"
+    "gpu_kernels/analytic_sky_kernels.cu"
 )
 
 set(
