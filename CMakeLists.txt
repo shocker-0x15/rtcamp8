@@ -121,6 +121,7 @@ function(set_common_sources)
         "--use_fast_math"
         "--relocatable-device-code=true"
         "-I${OPTIX_INCLUDE_DIR}"
+        "-I${CMAKE_SOURCE_DIR}/ext/nanovdb"
     )
 
     copy_files(

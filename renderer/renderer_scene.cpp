@@ -320,7 +320,7 @@ OptixTraversableHandle Scene::buildASs(CUstream stream) {
     else if (m_optixAsScratchMem.sizeInBytes() < sizes.tempSizeInBytes)
         m_optixAsScratchMem.resize(sizes.tempSizeInBytes, 1);
 
-    if (!m_optixInstanceBuffer.isInitialized())
+    if (!m_optixInstanceBuffer.isInitialized() && m_optixIas.getNumChildren() > 0)
         m_optixInstanceBuffer.initialize(g_gpuEnv.cuContext, bufferType, m_optixIas.getNumChildren());
     else if (m_optixInstanceBuffer.numElements() < m_optixIas.getNumChildren())
         m_optixInstanceBuffer.resize(m_optixInstanceBuffer.numElements());
@@ -426,17 +426,19 @@ void Scene::setUpLightInstDistribution(
         lightInstDistAddr, &dLightInstDist, sizeof(dLightInstDist), stream));
 
     uint32_t numInsts = m_instanceSlotOwners.size();
-    g_gpuEnv.computeLightProbs.computeInstProbBuffer.launchWithThreadDim(
-        stream, cudau::dim3(numInsts),
-        worldDimInfoAddr, lightInstDistAddr, numInsts,
-        m_geometryGroupBuffer.getDevicePointer(), m_instanceBuffer.getDevicePointer());
+    if (numInsts > 0) {
+        g_gpuEnv.computeLightProbs.computeInstProbBuffer.launchWithThreadDim(
+            stream, cudau::dim3(numInsts),
+            worldDimInfoAddr, lightInstDistAddr, numInsts,
+            m_geometryGroupBuffer.getDevicePointer(), m_instanceBuffer.getDevicePointer());
 
-    size_t scratchMemSize = m_scanScratchMem.sizeInBytes();
-    CUDADRV_CHECK(cubd::DeviceScan::ExclusiveSum(
-        m_scanScratchMem.getDevicePointer(), scratchMemSize,
-        lightInstDist.weightsOnDevice(),
-        lightInstDist.cdfOnDevice(),
-        numInsts, stream));
+        size_t scratchMemSize = m_scanScratchMem.sizeInBytes();
+        CUDADRV_CHECK(cubd::DeviceScan::ExclusiveSum(
+            m_scanScratchMem.getDevicePointer(), scratchMemSize,
+            lightInstDist.weightsOnDevice(),
+            lightInstDist.cdfOnDevice(),
+            numInsts, stream));
+    }
 
     g_gpuEnv.computeLightProbs.finalizeWorldDimInfo.launchWithThreadDim(
         stream, cudau::dim3(1),

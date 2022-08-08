@@ -541,7 +541,10 @@ static int32_t runGuiApp() {
         g_cameraOrientation = perFramePlpOnHost.camera.orientation;
         g_tempCameraOrientation = g_cameraOrientation;
         Vector3D sceneDim = initialSceneAABB.maxP - initialSceneAABB.minP;
-        g_cameraPositionalMovingSpeed = 0.003f * std::max({ sceneDim.x, sceneDim.y, sceneDim.z });
+        if (sceneDim.allFinite())
+            g_cameraPositionalMovingSpeed = 0.003f * std::max({ sceneDim.x, sceneDim.y, sceneDim.z });
+        else
+            g_cameraPositionalMovingSpeed = 0.0f;
         g_cameraDirectionalMovingSpeed = 0.0015f;
         g_cameraTiltSpeed = 0.025f;
     }

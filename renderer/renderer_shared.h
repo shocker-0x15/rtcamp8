@@ -1,8 +1,8 @@
 #pragma once
 
 #include "../common/common_renderer_types.h"
-#include "nanovdb/NanoVDB.h"
-#include "nanovdb/util/Ray.h"
+#include <nanovdb/NanoVDB.h>
+#include <nanovdb/util/Ray.h>
 
 namespace rtc8::shared {
 
