@@ -1048,7 +1048,7 @@ static Ref<cudau::Array> createEmittanceTexture(
     }
     else {
         hpprintf("  Reading: %s ... ", emittancePath.string().c_str());
-        if (loadTexture(emittancePath, float4(f3_immEmittance, 1.0f),
+        if (loadTexture(emittancePath, make_float4(f3_immEmittance, 1.0f),
                         &arrayEmittance, needsDegamma, isHDR))
             hpprintf("done.\n");
         else
@@ -1148,7 +1148,7 @@ static Ref<SurfaceMaterial> createSimplePBRMaterial(
     if (!occlusion_roughness_metallicPath.empty()) {
         hpprintf("  Reading: %s ... ", occlusion_roughness_metallicPath.string().c_str());
         bool done = loadTexture(
-            occlusion_roughness_metallicPath, float4(immOcclusion_roughness_metallic, 0.0f),
+            occlusion_roughness_metallicPath, make_float4(immOcclusion_roughness_metallic, 0.0f),
             &arrayOcclusion_roughness_metallic, &needsDegamma);
         hpprintf(done ? "done.\n" : "failed.\n");
     }

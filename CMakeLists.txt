@@ -296,6 +296,7 @@ target_compile_options(
 )
 target_include_directories(
     fakelib INTERFACE
+    "ext/nanovdb"
     "ext/tinyexr"
     "ext/tinyexr/deps/miniz"
     "ext/glfw/include"

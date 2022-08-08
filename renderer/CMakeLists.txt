@@ -51,12 +51,13 @@ nvcuda_compile_ptx(
     NVCC_OPTIONS
     "$<$<CONFIG:Debug>:-lineinfo>"
     "$<$<CONFIG:Debug>:-D_DEBUG=1>"
-    "--gpu-architecture=compute_52"
+    "--gpu-architecture=compute_${TARGET_CUDA_ARCH}"
     "-std=c++17"
     "-cudart" "shared"
     "--use_fast_math"
     "--relocatable-device-code=true"
     "-I${OPTIX_INCLUDE_DIR}"
+    "-I${CMAKE_SOURCE_DIR}/ext/nanovdb"
 )
 
 set_common_sources()

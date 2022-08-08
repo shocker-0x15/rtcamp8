@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../common/common_renderer_types.h"
+#include "nanovdb/NanoVDB.h"
+#include "nanovdb/util/Ray.h"
 
 namespace rtc8::shared {
 
@@ -44,6 +46,9 @@ struct StaticPipelineLaunchParameters {
     int2 imageSize;
     optixu::NativeBlockBuffer2D<PCG32RNG> rngBuffer;
     optixu::NativeBlockBuffer2D<RGBSpectrum> accumBuffer;
+
+    nanovdb::FloatGrid* densityGrid;
+    float majorant;
 };
 
 struct PerFramePipelineLaunchParameters {

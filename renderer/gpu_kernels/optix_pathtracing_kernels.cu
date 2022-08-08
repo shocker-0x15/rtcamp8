@@ -1,5 +1,4 @@
 ﻿#include "../renderer_shared.h"
-//#include "../../ext/nanovdb/NanoVDB.h"
 
 using namespace rtc8;
 using namespace rtc8::shared;

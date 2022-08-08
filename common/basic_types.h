@@ -2,6 +2,11 @@
 
 #include "common_shared.h"
 
+#define INCLUDE_CUDA_RUNTIME_API 1
+#if INCLUDE_CUDA_RUNTIME_API
+#include <cuda_runtime_api.h>
+#endif
+
 #define vec2print(v) (v).x, (v).y
 #define vec3print(v) (v).x, (v).y, (v).z
 #define vec4print(v) (v).x, (v).y, (v).z, (v).w
@@ -12,62 +17,42 @@
 // JP: CUDAビルトインに対応する型・関数をホスト側で定義しておく。
 // EN: Define types and functions on the host corresponding to CUDA built-ins.
 
+#if !INCLUDE_CUDA_RUNTIME_API
 struct alignas(8) int2 {
     int32_t x, y;
     constexpr int2(int32_t v = 0) : x(v), y(v) {}
     constexpr int2(int32_t xx, int32_t yy) : x(xx), y(yy) {}
 };
-inline constexpr int2 make_int2(int32_t x, int32_t y) {
-    return int2(x, y);
-}
 struct int3 {
     int32_t x, y, z;
     constexpr int3(int32_t v = 0) : x(v), y(v), z(v) {}
     constexpr int3(int32_t xx, int32_t yy, int32_t zz) : x(xx), y(yy), z(zz) {}
 };
-inline constexpr int3 make_int3(int32_t x, int32_t y, int32_t z) {
-    return int3(x, y, z);
-}
 struct alignas(16) int4 {
     int32_t x, y, z, w;
     constexpr int4(int32_t v = 0) : x(v), y(v), z(v), w(v) {}
     constexpr int4(int32_t xx, int32_t yy, int32_t zz, int32_t ww) : x(xx), y(yy), z(zz), w(ww) {}
 };
-inline constexpr int4 make_int4(int32_t x, int32_t y, int32_t z, int32_t w) {
-    return int4(x, y, z, w);
-}
 struct alignas(8) uint2 {
     uint32_t x, y;
     constexpr uint2(uint32_t v = 0) : x(v), y(v) {}
     constexpr uint2(uint32_t xx, uint32_t yy) : x(xx), y(yy) {}
 };
-inline constexpr uint2 make_uint2(uint32_t x, uint32_t y) {
-    return uint2(x, y);
-}
 struct uint3 {
     uint32_t x, y, z;
     constexpr uint3(uint32_t v = 0) : x(v), y(v), z(v) {}
     constexpr uint3(uint32_t xx, uint32_t yy, uint32_t zz) : x(xx), y(yy), z(zz) {}
 };
-inline constexpr uint3 make_uint3(uint32_t x, uint32_t y, uint32_t z) {
-    return uint3(x, y, z);
-}
 struct uint4 {
     uint32_t x, y, z, w;
     constexpr uint4(uint32_t v = 0) : x(v), y(v), z(v), w(v) {}
     constexpr uint4(uint32_t xx, uint32_t yy, uint32_t zz, uint32_t ww) : x(xx), y(yy), z(zz), w(ww) {}
 };
-inline constexpr uint4 make_uint4(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
-    return uint4(x, y, z, w);
-}
 struct alignas(8) float2 {
     float x, y;
     constexpr float2(float v = 0) : x(v), y(v) {}
     constexpr float2(float xx, float yy) : x(xx), y(yy) {}
 };
-inline float2 make_float2(float x, float y) {
-    return float2(x, y);
-}
 struct float3 {
     float x, y, z;
     constexpr float3(float v = 0) : x(v), y(v), z(v) {}
@@ -75,15 +60,38 @@ struct float3 {
     constexpr float3(const uint3 &v) :
         x(static_cast<float>(v.x)), y(static_cast<float>(v.y)), z(static_cast<float>(v.z)) {}
 };
-inline constexpr float3 make_float3(float x, float y, float z) {
-    return float3(x, y, z);
-}
 struct alignas(16) float4 {
     float x, y, z, w;
     constexpr float4(float v = 0) : x(v), y(v), z(v), w(v) {}
     constexpr float4(float xx, float yy, float zz, float ww) : x(xx), y(yy), z(zz), w(ww) {}
     constexpr float4(const float3 &xyz, float ww) : x(xyz.x), y(xyz.y), z(xyz.z), w(ww) {}
 };
+#endif
+
+inline constexpr int2 make_int2(int32_t x, int32_t y) {
+    return int2(x, y);
+}
+inline constexpr int3 make_int3(int32_t x, int32_t y, int32_t z) {
+    return int3(x, y, z);
+}
+inline constexpr int4 make_int4(int32_t x, int32_t y, int32_t z, int32_t w) {
+    return int4(x, y, z, w);
+}
+inline constexpr uint2 make_uint2(uint32_t x, uint32_t y) {
+    return uint2(x, y);
+}
+inline constexpr uint3 make_uint3(uint32_t x, uint32_t y, uint32_t z) {
+    return uint3(x, y, z);
+}
+inline constexpr uint4 make_uint4(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+    return uint4(x, y, z, w);
+}
+inline float2 make_float2(float x, float y) {
+    return float2(x, y);
+}
+inline constexpr float3 make_float3(float x, float y, float z) {
+    return float3(x, y, z);
+}
 inline constexpr float4 make_float4(float x, float y, float z, float w) {
     return float4(x, y, z, w);
 }

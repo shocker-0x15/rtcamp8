@@ -11,6 +11,10 @@
 
 #include "../common/stopwatch.h"
 
+#include <nanovdb/util/IO.h>
+#include <nanovdb/util/CudaDeviceBuffer.h>
+#include <nanovdb/util/Ray.h>
+
 
 
 namespace ImGui {
@@ -484,6 +488,37 @@ static int32_t runGuiApp() {
     BoundingBox3D initialSceneAABB = g_scene.computeSceneAABB(renderConfigs.timeBegin);
 
     setUpPipelineLaunchParameters(renderTargetSizeX, renderTargetSizeY);
+
+    {
+        std::filesystem::path volPath =
+            R"(C:\Users\shocker_0x15\repos\instant-ngp\data\volume\wdas_cloud_quarter.nvdb)";
+        auto gridHandle = nanovdb::io::readGrid<nanovdb::CudaDeviceBuffer>(volPath.string());
+        gridHandle.deviceUpload();
+        auto gridOnHost = gridHandle.grid<float>();
+        nanovdb::CoordBBox coordBBox = gridOnHost->indexBBox();
+
+        const nanovdb::DefaultReadAccessor<float> &acc = gridOnHost->tree().getAccessor();
+        CompensatedSum<float> sumValues;
+        float minValue = INFINITY;
+        float majorant = -INFINITY;
+        for (int ix = coordBBox.min()[0]; ix < coordBBox.max()[0]; ++ix) {
+            for (int iy = coordBBox.min()[1]; iy < coordBBox.max()[1]; ++iy) {
+                for (int iz = coordBBox.min()[2]; iz < coordBBox.max()[2]; ++iz) {
+                    float density = acc.getValue({ ix, iy, iz });
+                    minValue = std::min(density, minValue);
+                    majorant = std::max(density, majorant);
+                    sumValues += density;
+                }
+            }
+        }
+        float avgValue = sumValues /
+            (coordBBox.max()[0] - coordBBox.min()[0]) *
+            (coordBBox.max()[1] - coordBBox.min()[1]) *
+            (coordBBox.max()[2] - coordBBox.min()[2]);
+
+        staticPlpOnHost.densityGrid = gridHandle.deviceGrid<float>(0);
+        staticPlpOnHost.majorant = majorant;
+    }
 
 
 
