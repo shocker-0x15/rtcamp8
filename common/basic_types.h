@@ -2924,6 +2924,12 @@ struct RGBTemplate {
         return !hasNegative() && allFinite();
     }
 
+    CUDA_COMMON_FUNCTION constexpr float min() const {
+        return std::fmin(r, std::fmin(g, b));
+    }
+    CUDA_COMMON_FUNCTION constexpr float max() const {
+        return std::fmax(r, std::fmax(g, b));
+    }
     CUDA_COMMON_FUNCTION constexpr float luminance() const {
         return
             static_cast<RealType>(0.2126729) * r +
@@ -3056,6 +3062,32 @@ CUDA_COMMON_FUNCTION CUDA_INLINE RGBTemplate<RealType> HSVtoRGB(RealType h, Real
     else if (hi == 5)
         return RGBTemplate<RealType>(v, m, n);
     return RGBTemplate<RealType>(0, 0, 0);
+}
+
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE void RGBtoHSV(
+    RGBTemplate<RealType> &input, RealType* h, RealType* s, RealType* v) {
+    RealType minV = min(min(input.r, input.g), input.b);
+    RealType maxV = max(max(input.r, input.g), input.b);
+
+    *v = maxV;
+    RealType delta = maxV - minV;
+    if (delta < 1e-5f || maxV == 0.0f) {
+        *h = 0.0f;
+        *s = 0.0f;
+        return;
+    }
+
+    *s = delta / maxV;
+
+    if (input.r >= maxV)
+        *h = (input.g - input.b) / delta;
+    else if (input.g >= maxV)
+        *h = 2.0f + (input.b - input.r) / delta;
+    else
+        *h = 4.0f + (input.r - input.g) / delta;
+    *h /= 6;
+    *h = std::fmod(*h + 1.0f, 1.0f);
 }
 
 template <typename RealType>

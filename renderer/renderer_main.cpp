@@ -930,6 +930,8 @@ static int32_t runApp() {
     perFramePlpOnHost.enableEnvironmentalLight = false;
     perFramePlpOnHost.mousePosition = int2(0, 0);
     perFramePlpOnHost.enableDebugPrint = false;
+    if (renderConfigs.environment)
+        perFramePlpOnHost.enableEnvironmentalLight = true;
 
     Ref<Camera> activeCamera;
     {
@@ -964,12 +966,21 @@ static int32_t runApp() {
 
         perFramePlpOnHost.instances = g_scene.getInstancesOnDevice();
 
+        if (renderConfigs.environment)
+            renderConfigs.environment->setUpDeviceData(&perFramePlpOnHost.envLight, timePoint);
         g_scene.setUpDeviceDataBuffers(cuStream, timePoint);
 
         perFramePlpOnHost.travHandle = g_scene.buildASs(cuStream);
 
         CUDADRV_CHECK(cuMemcpyHtoDAsync(
             perFramePlpOnDevice, &perFramePlpOnHost, sizeof(perFramePlpOnHost), cuStream));
+
+        if (renderConfigs.environment) {
+            renderConfigs.environment->computeDistribution(
+                cuStream,
+                perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, envLight),
+                timePoint);
+        }
 
         g_scene.setUpLightInstDistribution(
             cuStream,

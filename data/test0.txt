@@ -14,7 +14,7 @@ skyenv env
 env-coeff env 5
 skyenv-dir env 85 85
 env-addkey env 0.0
-skyenv-dir env 0 10
+skyenv-dir env 0 25
 env-addkey env 5.0
 skyenv-dir env -85 85
 env-addkey env 10.0

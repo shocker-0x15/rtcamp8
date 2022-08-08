@@ -247,6 +247,16 @@ CUDA_DEVICE_KERNEL void generateArHosekSkyEnvironmentalTexture(
         xyz[1] /= cmfSet.integralCmf;
         xyz[2] /= cmfSet.integralCmf;
         rgb = RGBSpectrum::fromXYZ(xyz);
+
+        // Ad-hoc adjustment for high altitude.
+        float maxV = rgb.max();
+        rgb /= maxV;
+        float h, s, v;
+        RGBtoHSV(rgb, &h, &s, &v);
+        float diffHue = std::fmod(h - 2.0f / 3 + 1.0f, 1.0f);
+        float diffAngle = 2 * pi_v<float> * diffHue;
+        s = lerp(s, 1.0f, s * std::pow(0.5f * (1 + std::cos(diffAngle)), 1.0f));
+        rgb = maxV * HSVtoRGB(h, s, 1.0f);
     }
     dstTex.write(pix, rgb);
 }

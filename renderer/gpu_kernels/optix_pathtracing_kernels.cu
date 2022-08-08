@@ -489,7 +489,7 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
     plp.s->rngBuffer.write(launchIndex, rng);
 
     if (!contribution.allNonNegativeFinite()) {
-        printf("%4u, %4u: (%g, %g, %g)\n",
+        printf("Store Cont.: %4u, %4u: (%g, %g, %g)\n",
                launchIndex.x, launchIndex.y, rgbprint(contribution));
         return;
     }
