@@ -3,6 +3,7 @@
 using namespace rtc8;
 using namespace rtc8::shared;
 using namespace rtc8::device;
+namespace nvdb = nanovdb;
 
 static constexpr bool debugVisualizeBaseColor = false;
 
@@ -30,12 +31,15 @@ struct HitPointParameter {
     }
 };
 
-struct SurfacePoint {
+struct InteractionPoint {
     Point3D position;
-    Normal3D geometricNormal;
+    struct SurfaceProperties {
+        Normal3D geometricNormal;
+        TexCoord2D texCoord;
+        float hypAreaPDensity;
+    } asSurf;
     ReferenceFrame shadingFrame;
-    TexCoord2D texCoord;
-    float hypAreaPDensity;
+    uint32_t inMedium : 1;
 
     CUDA_DEVICE_FUNCTION Vector3D toLocal(const Vector3D &v) const {
         return shadingFrame.toLocal(v);
@@ -43,12 +47,32 @@ struct SurfacePoint {
     CUDA_DEVICE_FUNCTION Vector3D fromLocal(const Vector3D &v) const {
         return shadingFrame.fromLocal(v);
     }
+
+    CUDA_DEVICE_FUNCTION float calcDot(const Vector3D &dir) const {
+        if (inMedium)
+            return 1.0f;
+        else
+            return dot(dir, asSurf.geometricNormal);
+    }
+    CUDA_DEVICE_FUNCTION float calcAbsDot(const Vector3D &dir) const {
+        if (inMedium)
+            return 1.0f;
+        else
+            return absDot(dir, asSurf.geometricNormal);
+    }
+
+    CUDA_DEVICE_FUNCTION Point3D calcOffsetRayOrigin(bool evalFrontFace) const {
+        if (inMedium)
+            return position;
+        else
+            return offsetRayOrigin(position, (evalFrontFace ? 1 : -1) * asSurf.geometricNormal);
+    }
 };
 
 CUDA_DEVICE_FUNCTION CUDA_INLINE void computeSurfacePoint(
     const Instance &inst, const GeometryInstance &geomInst,
     uint32_t primIndex, float b1, float b2,
-    SurfacePoint* surfPt) {
+    InteractionPoint* interPt) {
     const Triangle &tri = geomInst.triangles[primIndex];
     const Vertex (&vs)[] = {
         geomInst.vertices[tri.indices[0]],
@@ -63,16 +87,17 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void computeSurfacePoint(
 
     float b0 = 1 - (b1 + b2);
 
-    surfPt->position = b0 * ps[0] + b1 * ps[1] + b2 * ps[2];
-    surfPt->geometricNormal = cross(ps[1] - ps[0], ps[2] - ps[0]);
-    float area = 0.5f * surfPt->geometricNormal.length();
-    surfPt->geometricNormal /= (2 * area);
+    interPt->inMedium = false;
+    interPt->position = b0 * ps[0] + b1 * ps[1] + b2 * ps[2];
+    interPt->asSurf.geometricNormal = cross(ps[1] - ps[0], ps[2] - ps[0]);
+    float area = 0.5f * interPt->asSurf.geometricNormal.length();
+    interPt->asSurf.geometricNormal /= (2 * area);
     Normal3D localShadingNormal = b0 * vs[0].normal + b1 * vs[1].normal + b2 * vs[2].normal;
     Vector3D localShadingTangent = b0 * vs[0].tangent + b1 * vs[1].tangent + b2 * vs[2].tangent;
-    surfPt->shadingFrame = ReferenceFrame(
+    interPt->shadingFrame = ReferenceFrame(
         normalize(inst.transform * localShadingNormal),
         normalize(inst.transform * localShadingTangent));
-    surfPt->texCoord = b0 * vs[0].texCoord + b1 * vs[1].texCoord + b2 * vs[2].texCoord;
+    interPt->asSurf.texCoord = b0 * vs[0].texCoord + b1 * vs[1].texCoord + b2 * vs[2].texCoord;
 
     const GeometryGroup &geomGroup = plp.s->geometryGroups[inst.geomGroupSlot];
 
@@ -83,19 +108,19 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void computeSurfacePoint(
     float instImportance = pow2(inst.uniformScale) * geomGroupImportance;
     float instProb = instImportance / plp.f->lightInstDist.integral();
     if (instProb == 0.0f) {
-        surfPt->hypAreaPDensity = 0.0f;
+        interPt->asSurf.hypAreaPDensity = 0.0f;
         return;
     }
     lightProb *= instProb;
     float geomInstImportance = geomInst.emitterPrimDist.integral();
     float geomInstProb = geomInstImportance / geomGroupImportance;
     if (geomInstProb == 0.0f) {
-        surfPt->hypAreaPDensity = 0.0f;
+        interPt->asSurf.hypAreaPDensity = 0.0f;
         return;
     }
     lightProb *= geomInstProb;
     lightProb *= geomInst.emitterPrimDist.evaluatePMF(primIndex);
-    surfPt->hypAreaPDensity = lightProb / area;
+    interPt->asSurf.hypAreaPDensity = lightProb / area;
 }
 
 
@@ -277,7 +302,7 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void sampleLight(
 }
 
 CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
-    const SurfacePoint &surfPt, const BSDF &bsdf, const BSDFQuery &bsdfQuery, PCG32RNG &rng) {
+    const InteractionPoint &interPt, const BSDF &bsdf, const BSDFQuery &bsdfQuery, PCG32RNG &rng) {
     float uLight = rng.getFloat0cTo1o();
     bool selectEnvLight = false;
     float probToSampleCurLightType = 1.0f;
@@ -301,7 +326,7 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
     LightSample lightSample;
     float areaPDensity;
     sampleLight<false>(
-        surfPt.position,
+        interPt.position,
         selectEnvLight, uLight, rng.getFloat0cTo1o(), rng.getFloat0cTo1o(),
         &lightSample, &areaPDensity);
     if (areaPDensity == 0.0f)
@@ -310,7 +335,7 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
 
     Vector3D shadowRayDir = lightSample.atInfinity ?
         -Vector3D(lightSample.position) :
-        (surfPt.position - lightSample.position);
+        (interPt.position - lightSample.position);
     float lpCos = dot(shadowRayDir, lightSample.normal);
     if (lpCos <= 0.0f)
         return RGBSpectrum::Zero();
@@ -320,11 +345,11 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
     float traceLength = 1.0f;
     if (lightSample.atInfinity) {
         traceLength = 2 * plp.f->worldDimInfo.radius;
-        lightPoint = surfPt.position + traceLength * -shadowRayDir;
+        lightPoint = interPt.position + traceLength * -shadowRayDir;
     }
     else {
         lightPoint = offsetRayOrigin(lightSample.position, lightSample.normal);
-        shadowRayDir = surfPt.position - lightPoint;
+        shadowRayDir = interPt.position - lightPoint;
         dist2 = shadowRayDir.squaredLength();
         traceLength = std::sqrt(dist2);
         shadowRayDir /= traceLength;
@@ -339,9 +364,21 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
         PathTracingRayType::Visibility, shared::maxNumRayTypes, PathTracingRayType::Visibility,
         visibility);
 
+    if (plp.s->densityGrid) {
+        //const nvdb::DefaultReadAccessor<float> &acc = plp.s->densityGrid->getAccessor();
+        nvdb::Ray<float> nvdbRay(
+            nvdb::Vec3f(lightPoint.x, lightPoint.y, lightPoint.z),
+            nvdb::Vec3f(shadowRayDir.x, shadowRayDir.y, shadowRayDir.z),
+            0.0f, traceLength);
+
+        if (nvdbRay.clip(plp.s->densityGridBBox)) {
+            visibility *= std::exp(-plp.s->majorant * (nvdbRay.t1() - nvdbRay.t0()));
+        }
+    }
+
     RGBSpectrum ret = RGBSpectrum::Zero();
     if (visibility > 0.0f) {
-        Vector3D vInLocal = surfPt.toLocal(-shadowRayDir);
+        Vector3D vInLocal = interPt.toLocal(-shadowRayDir);
         float bsdfPDensity = bsdf.evaluatePDF(bsdfQuery, vInLocal) * lpCos / dist2;
         if (!rtc8::isfinite(bsdfPDensity))
             bsdfPDensity = 0.0f;
@@ -351,9 +388,9 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
         // Assume a diffuse emitter.
         RGBSpectrum Le = lightSample.emittance / pi_v<float>;
         RGBSpectrum fsValue = bsdf.evaluateF(bsdfQuery, vInLocal);
-        float spCos = absDot(shadowRayDir, surfPt.geometricNormal);
+        float spCos = interPt.calcAbsDot(shadowRayDir);
         float G = lpCos * spCos / dist2;
-        ret = fsValue * Le * (misWeight * G / areaPDensity);
+        ret = fsValue * Le * (visibility * misWeight * G / areaPDensity);
     }
 
     return ret;
@@ -392,14 +429,35 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
         uint32_t geomInstSlot = 0xFFFFFFFF;
         uint32_t primIndex = 0xFFFFFFFF;
         float b1 = 0.0f, b2 = 0.0f;
+        float hitDist = 1e+10f;
         optixu::trace<ClosestRaySignature>(
             plp.f->travHandle,
             rayOrigin.toNativeType(), rayDirection.toNativeType(), 0.0f, 1e+10f, 0.0f,
             0xFF, OPTIX_RAY_FLAG_NONE,
             PathTracingRayType::Closest, maxNumRayTypes, PathTracingRayType::Closest,
-            instSlot, geomInstSlot, primIndex, b1, b2);
+            instSlot, geomInstSlot, primIndex, b1, b2, hitDist);
 
-        if (instSlot == 0xFFFFFFFF) {
+        bool volEventHappens = false;
+        if (plp.s->densityGrid) {
+            //const nvdb::DefaultReadAccessor<float> &acc = plp.s->densityGrid->getAccessor();
+            nvdb::Ray<float> nvdbRay(
+                nvdb::Vec3f(rayOrigin.x, rayOrigin.y, rayOrigin.z),
+                nvdb::Vec3f(rayDirection.x, rayDirection.y, rayDirection.z),
+                0.0f, hitDist);
+            if (pathLength == 1 && DEBUG_MOUSE_POS_CONDITION)
+                printf("vol\n");
+
+            if (nvdbRay.clip(plp.s->densityGridBBox)) {
+                float fpDist = std::fmax(0.0f, nvdbRay.t0());
+                fpDist += -std::log(1.0f - rng.getFloat0cTo1o()) / plp.s->majorant;
+                if (fpDist <= nvdbRay.t1()) {
+                    volEventHappens = true;
+                    hitDist = fpDist;
+                }
+            }
+        }
+
+        if (instSlot == 0xFFFFFFFF && !volEventHappens) {
             if (plp.f->enableEnvironmentalLight) {
                 float hypAreaPDensity;
                 RGBSpectrum radiance = plp.f->envLight.evaluate(rayDirection, &hypAreaPDensity);
@@ -419,35 +477,47 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
             break;
         }
 
-        const Instance &inst = plp.f->instances[instSlot];
-        const GeometryInstance &geomInst = plp.s->geometryInstances[geomInstSlot];
-        SurfacePoint surfPt;
-        computeSurfacePoint(inst, geomInst, primIndex, b1, b2, &surfPt);
+        InteractionPoint interPt;
+        uint32_t surfMatSlot = 0xFFFFFFFF;
+        if (volEventHappens) {
+            interPt.position = rayOrigin + hitDist * rayDirection;
+            interPt.shadingFrame = ReferenceFrame(-rayDirection);
+            interPt.inMedium = true;
+        }
+        else {
+            const Instance &inst = plp.f->instances[instSlot];
+            const GeometryInstance &geomInst = plp.s->geometryInstances[geomInstSlot];
+            computeSurfacePoint(inst, geomInst, primIndex, b1, b2, &interPt);
 
-        const SurfaceMaterial &surfMat = plp.s->surfaceMaterials[geomInst.surfMatSlot];
+            surfMatSlot = geomInst.surfMatSlot;
 
-        if (geomInst.normal) {
-            Normal3D modLocalNormal = geomInst.readModifiedNormal(
-                geomInst.normal, geomInst.normalDimInfo, surfPt.texCoord);
-            applyBumpMapping(modLocalNormal, &surfPt.shadingFrame);
+            if (geomInst.normal) {
+                Normal3D modLocalNormal = geomInst.readModifiedNormal(
+                    geomInst.normal, geomInst.normalDimInfo, interPt.asSurf.texCoord);
+                applyBumpMapping(modLocalNormal, &interPt.shadingFrame);
+            }
         }
 
         Vector3D vOut(-rayDirection);
-        Vector3D vOutLocal = surfPt.toLocal(vOut);
+        Vector3D vOutLocal = interPt.toLocal(vOut);
 
-        // Implicit light sampling
-        if (vOutLocal.z > 0 && surfMat.emittance) {
-            float4 texValue = tex2DLod<float4>(surfMat.emittance, surfPt.texCoord.u, surfPt.texCoord.v, 0.0f);
-            RGBSpectrum emittance(texValue.x, texValue.y, texValue.z);
-            float misWeight = 1.0f;
-            if (pathLength > 1) {
-                float dist2 = squaredDistance(rayOrigin, surfPt.position);
-                float lightPDensity = surfPt.hypAreaPDensity * dist2 / vOutLocal.z;
-                float bsdfPDensity = dirPDensity;
-                misWeight = pow2(bsdfPDensity) / (pow2(bsdfPDensity) + pow2(lightPDensity));
+        if (!volEventHappens) {
+            const SurfaceMaterial &surfMat = plp.s->surfaceMaterials[surfMatSlot];
+            // Implicit light sampling
+            if (vOutLocal.z > 0 && surfMat.emittance) {
+                float4 texValue = tex2DLod<float4>(
+                    surfMat.emittance, interPt.asSurf.texCoord.u, interPt.asSurf.texCoord.v, 0.0f);
+                RGBSpectrum emittance(texValue.x, texValue.y, texValue.z);
+                float misWeight = 1.0f;
+                if (pathLength > 1) {
+                    float dist2 = squaredDistance(rayOrigin, interPt.position);
+                    float lightPDensity = interPt.asSurf.hypAreaPDensity * dist2 / vOutLocal.z;
+                    float bsdfPDensity = dirPDensity;
+                    misWeight = pow2(bsdfPDensity) / (pow2(bsdfPDensity) + pow2(lightPDensity));
+                }
+                // Assume a diffuse emitter.
+                contribution += throughput * emittance * (misWeight / pi_v<float>);
             }
-            // Assume a diffuse emitter.
-            contribution += throughput * emittance * (misWeight / pi_v<float>);
         }
 
         // Russian roulette
@@ -456,24 +526,33 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
             break;
         throughput /= continueProb;
 
+        constexpr float scatteringAlbedo = 0.99f;
         BSDF bsdf;
-        bsdf.setup(surfMat, surfPt.texCoord);
-        BSDFQuery bsdfQuery(vOutLocal, surfPt.toLocal(surfPt.geometricNormal));
+        BSDFQuery bsdfQuery;
+        if (volEventHappens) {
+            bsdf.setup(scatteringAlbedo);
+            bsdfQuery = BSDFQuery();
+        }
+        else {
+            const SurfaceMaterial &surfMat = plp.s->surfaceMaterials[surfMatSlot];
+            bsdf.setup(surfMat, interPt.asSurf.texCoord);
+            bsdfQuery = BSDFQuery(vOutLocal, interPt.toLocal(interPt.asSurf.geometricNormal));
+        }
 
         if constexpr (debugVisualizeBaseColor) {
             contribution += throughput * bsdf.evaluateDHReflectanceEstimate(bsdfQuery);
             break;
         }
 
-        contribution += throughput * performNextEventEstimation(surfPt, bsdf, bsdfQuery, rng);
+        contribution += throughput * performNextEventEstimation(interPt, bsdf, bsdfQuery, rng);
 
         BSDFSample bsdfSample(rng.getFloat0cTo1o(), rng.getFloat0cTo1o());
         BSDFQueryResult bsdfResult;
         RGBSpectrum fsValue = bsdf.sampleF(bsdfQuery, bsdfSample, &bsdfResult);
         if (bsdfResult.dirPDensity == 0.0f)
             break; // sampling failed.
-        rayDirection = surfPt.fromLocal(bsdfResult.dirLocal);
-        float dotSGN = dot(rayDirection, surfPt.geometricNormal);
+        rayDirection = interPt.fromLocal(bsdfResult.dirLocal);
+        float dotSGN = interPt.calcDot(rayDirection);
         RGBSpectrum localThroughput = fsValue * (std::fabs(dotSGN) / bsdfResult.dirPDensity);
         throughput *= localThroughput;
         Assert(
@@ -481,7 +560,7 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
             "tp: (%g, %g, %g), dotSGN: %g, dirP: %g",
             rgbprint(localThroughput), dotSGN, bsdfResult.dirPDensity);
 
-        rayOrigin = offsetRayOrigin(surfPt.position, (dotSGN > 0 ? 1 : -1) * surfPt.geometricNormal);
+        rayOrigin = interPt.calcOffsetRayOrigin(dotSGN > 0.0f);
         dirPDensity = bsdfResult.dirPDensity;
     }
 
@@ -505,6 +584,7 @@ CUDA_DEVICE_KERNEL void RT_CH_NAME(pathTrace)() {
     uint32_t instSlot = optixGetInstanceId();
     auto sbtr = HitGroupSBTRecordData::get();
     auto hp = HitPointParameter::get();
+    float dist = optixGetRayTmax();
 
-    ClosestRaySignature::set(&instSlot, &sbtr.geomInstSlot, &hp.primIndex, &hp.b1, &hp.b2);
+    ClosestRaySignature::set(&instSlot, &sbtr.geomInstSlot, &hp.primIndex, &hp.b1, &hp.b2, &dist);
 }

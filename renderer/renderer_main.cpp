@@ -248,6 +248,84 @@ static std::filesystem::path g_sceneFilePath;
 static int32_t runGuiApp() {
     const std::filesystem::path exeDir = getExecutableDirectory();
 
+    //{
+    //    std::filesystem::path volPath =
+    //        R"(C:\Users\shocker_0x15\repos\instant-ngp\data\volume\wdas_cloud_quarter.nvdb)";
+    //    auto gridHandle = nanovdb::io::readGrid<nanovdb::CudaDeviceBuffer>(volPath.string());
+    //    gridHandle.deviceUpload();
+    //    uint32_t gridCount = gridHandle.gridCount();
+    //    nanovdb::GridType gridType = gridHandle.gridType();
+    //    const nanovdb::GridMetaData* metaData = gridHandle.gridMetaData();
+    //    auto gridOnHost = gridHandle.grid<float>();
+    //    nanovdb::GridClass gridClass = gridOnHost->gridClass();
+    //    nanovdb::BBoxR bbox = gridOnHost->worldBBox();
+    //    nanovdb::Vec3R voxelSize = gridOnHost->voxelSize();
+
+    //    uint64_t gridSize = metaData->gridSize();
+    //    nanovdb::CoordBBox coordBBox = metaData->indexBBox();
+    //    uint64_t activeVoxelCount = metaData->activeVoxelCount();
+
+    //    auto ray0 = nanovdb::Ray<double>(
+    //        nanovdb::Vec3R(
+    //            0.5f * (bbox.min()[0] + bbox.max()[0]),
+    //            0.5f * (bbox.min()[1] + bbox.max()[1]),
+    //            bbox.max()[2] + 1.0f),
+    //        nanovdb::Vec3R(0, 0, -1));
+
+    //    if (ray0.clip(bbox)) {
+    //        double t0 = ray0.t0();
+    //        double t1 = ray0.t1();
+    //        printf("");
+    //    }
+
+    //    auto ray1 = nanovdb::Ray<double>(
+    //        nanovdb::Vec3R(
+    //            0.5f * (bbox.min()[0] + bbox.max()[0]),
+    //            0.5f * (bbox.min()[1] + bbox.max()[1]),
+    //            0.5f * (bbox.min()[2] + bbox.max()[2])),
+    //        nanovdb::Vec3R(0, 0, -1));
+
+    //    if (ray1.clip(bbox)) {
+    //        double t0 = ray1.t0();
+    //        double t1 = ray1.t1();
+    //        printf("");
+    //    }
+
+    //    auto ray2 = nanovdb::Ray<double>(
+    //        nanovdb::Vec3R(
+    //            0.5f * (bbox.min()[0] + bbox.max()[0]),
+    //            0.5f * (bbox.min()[1] + bbox.max()[1]),
+    //            bbox.min()[2] - 1.0f),
+    //        nanovdb::Vec3R(0, 0, -1));
+
+    //    if (ray2.clip(bbox)) {
+    //        double t0 = ray2.t0();
+    //        double t1 = ray2.t1();
+    //        printf("");
+    //    }
+
+    //    const nanovdb::DefaultReadAccessor<float> &acc = gridOnHost->tree().getAccessor();
+    //    CompensatedSum<float> sumValues;
+    //    float minValue = INFINITY;
+    //    float majorant = -INFINITY;
+    //    for (int ix = coordBBox.min()[0]; ix < coordBBox.max()[0]; ++ix) {
+    //        for (int iy = coordBBox.min()[1]; iy < coordBBox.max()[1]; ++iy) {
+    //            for (int iz = coordBBox.min()[2]; iz < coordBBox.max()[2]; ++iz) {
+    //                float density = acc.getValue({ ix, iy, iz });
+    //                minValue = std::min(density, minValue);
+    //                majorant = std::max(density, majorant);
+    //                sumValues += density;
+    //            }
+    //        }
+    //    }
+    //    float avgValue = sumValues /
+    //        (coordBBox.max()[0] - coordBBox.min()[0]) *
+    //        (coordBBox.max()[1] - coordBBox.min()[1]) *
+    //        (coordBBox.max()[2] - coordBBox.min()[2]);
+
+    //    printf("");
+    //}
+
     RenderConfigs renderConfigs;
     loadScene(g_sceneFilePath, &renderConfigs);
 
@@ -487,14 +565,13 @@ static int32_t runGuiApp() {
 
     BoundingBox3D initialSceneAABB = g_scene.computeSceneAABB(renderConfigs.timeBegin);
 
-    setUpPipelineLaunchParameters(renderTargetSizeX, renderTargetSizeY);
-
     {
         std::filesystem::path volPath =
             R"(C:\Users\shocker_0x15\repos\instant-ngp\data\volume\wdas_cloud_quarter.nvdb)";
         auto gridHandle = nanovdb::io::readGrid<nanovdb::CudaDeviceBuffer>(volPath.string());
         gridHandle.deviceUpload();
         auto gridOnHost = gridHandle.grid<float>();
+        nanovdb::BBoxR bbox = gridOnHost->worldBBox();
         nanovdb::CoordBBox coordBBox = gridOnHost->indexBBox();
 
         const nanovdb::DefaultReadAccessor<float> &acc = gridOnHost->tree().getAccessor();
@@ -517,8 +594,29 @@ static int32_t runGuiApp() {
             (coordBBox.max()[2] - coordBBox.min()[2]);
 
         staticPlpOnHost.densityGrid = gridHandle.deviceGrid<float>(0);
+        staticPlpOnHost.densityGridBBox = nanovdb::BBox<nanovdb::Vec3f>(
+            nanovdb::Vec3f(bbox.min()[0], bbox.min()[1], bbox.min()[2]),
+            nanovdb::Vec3f(bbox.max()[0], bbox.max()[1], bbox.max()[2]));
         staticPlpOnHost.majorant = majorant;
+
+
+
+        //staticPlpOnHost.densityGrid = (nanovdb::FloatGrid*)1;
+        //staticPlpOnHost.densityGridBBox = nanovdb::BBox<nanovdb::Vec3f>(
+        //    nanovdb::Vec3f(-0.5f, -0.5f, -0.5f),
+        //    nanovdb::Vec3f(0.5f, 0.5f, 0.5f));
+        //staticPlpOnHost.majorant = 10.0f;
+
+        initialSceneAABB.unify(BoundingBox3D(
+            Point3D(staticPlpOnHost.densityGridBBox.min()[0],
+                    staticPlpOnHost.densityGridBBox.min()[1],
+                    staticPlpOnHost.densityGridBBox.min()[2]),
+            Point3D(staticPlpOnHost.densityGridBBox.max()[0],
+                    staticPlpOnHost.densityGridBBox.max()[1],
+                    staticPlpOnHost.densityGridBBox.max()[2])));
     }
+
+    setUpPipelineLaunchParameters(renderTargetSizeX, renderTargetSizeY);
 
 
 

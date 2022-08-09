@@ -863,6 +863,7 @@ struct BSDFQuery {
     Vector3D dirLocal;
     Normal3D geometricNormalLocal;
 
+    CUDA_COMMON_FUNCTION BSDFQuery() {}
     CUDA_COMMON_FUNCTION BSDFQuery(
         const Vector3D &dirL, const Normal3D &gNormL) :
         dirLocal(dirL), geometricNormalLocal(gNormL) {}
@@ -1273,6 +1274,12 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE Vector3D cosineSampleHemisphere(float u0, float
     float x, y;
     concentricSampleDisk(u0, u1, &x, &y);
     return Vector3D(x, y, std::sqrt(std::fmax(0.0f, 1.0f - x * x - y * y)));
+}
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE Vector3D uniformSampleSphere(float u0, float u1) {
+    float phi = 2 * pi_v<float> * u1;
+    float theta = std::acos(1 - 2 * u0);
+    return Vector3D::fromPolarZUp(phi, theta);
 }
 
 
@@ -2002,86 +2009,193 @@ DEFINE_SETUP_BSDF_CALLABLE(SimplePBR_BRDF);
 
 
 
+class IsotropicPhaseFunction {
+public:
+    CUDA_DEVICE_FUNCTION IsotropicPhaseFunction() {}
+
+    CUDA_DEVICE_FUNCTION RGBSpectrum sampleF(
+        const shared::BSDFQuery &query, const shared::BSDFSample &sample,
+        shared::BSDFQueryResult* result) const {
+        result->dirLocal = uniformSampleSphere(sample.uDir[0], sample.uDir[1]);
+        result->dirPDensity = 1.0f / (4 * pi_v<float>);
+        return RGBSpectrum(1.0f / (4 * pi_v<float>));
+    }
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(const shared::BSDFQuery &query, const Vector3D &vSampled) const {
+        return RGBSpectrum(1.0f / (4 * pi_v<float>));
+    }
+    CUDA_DEVICE_FUNCTION float evaluatePDF(const shared::BSDFQuery &query, const Vector3D &vSampled) const {
+        return 1.0f / (4 * pi_v<float>);
+    }
+};
+
+
+
 template <bool isGeneric>
 class BSDFTemplate;
 
 template <>
 class BSDFTemplate<false> {
-    HARD_CODED_BSDF m_bsdf;
+    union {
+        HARD_CODED_BSDF m_bsdf;
+        struct {
+            IsotropicPhaseFunction m_pf;
+            RGBSpectrum m_scatteringAlbedo;
+        };
+    };
+    uint32_t m_inMedium : 1;
 
 public:
+    CUDA_DEVICE_FUNCTION BSDFTemplate() {}
+
     CUDA_DEVICE_FUNCTION void setup(
         const shared::SurfaceMaterial &matData, const TexCoord2D &texCoord,
         shared::BSDFBuildFlags flags = shared::BSDFBuildFlags::None) {
         setupBSDFBody<HARD_CODED_BSDF>(matData, texCoord, reinterpret_cast<uint32_t*>(&m_bsdf), flags);
+        m_inMedium = false;
+    }
+    CUDA_DEVICE_FUNCTION void setup(
+        const RGBSpectrum &scatteringAlbedo,
+        shared::BSDFBuildFlags flags = shared::BSDFBuildFlags::None) {
+        m_scatteringAlbedo = scatteringAlbedo;
+        m_inMedium = true;
+    }
+    CUDA_DEVICE_FUNCTION bool isInMedium() const {
+        return m_inMedium;
     }
     CUDA_DEVICE_FUNCTION void getSurfaceParameters(
         RGBSpectrum* diffuseReflectance, RGBSpectrum* specularReflectance, float* roughness) const {
+        if (m_inMedium) {
+            *diffuseReflectance = m_scatteringAlbedo;
+            *specularReflectance = RGBSpectrum::Zero();
+            *roughness = 0.0f;
+            return;
+        }
+
         return m_bsdf.getSurfaceParameters(diffuseReflectance, specularReflectance, roughness);
     }
     CUDA_DEVICE_FUNCTION RGBSpectrum sampleF(
         const shared::BSDFQuery &query, const shared::BSDFSample &smp,
         shared::BSDFQueryResult* result) const {
-        RGBSpectrum fsValue = m_bsdf.sampleF(query, smp, result);
+        RGBSpectrum fsValue;
+        if (m_inMedium)
+            fsValue = m_scatteringAlbedo * m_pf.sampleF(query, smp, result);
+        else
+            fsValue = m_bsdf.sampleF(query, smp, result);
         return fsValue;
     }
     CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(
         const shared::BSDFQuery &query, const Vector3D &vSampled) const {
-        RGBSpectrum fsValue = m_bsdf.evaluateF(query, vSampled);
+        RGBSpectrum fsValue;
+        if (m_inMedium)
+            fsValue = m_scatteringAlbedo * m_pf.evaluateF(query, vSampled);
+        else
+            fsValue = m_bsdf.evaluateF(query, vSampled);
         return fsValue;
     }
     CUDA_DEVICE_FUNCTION float evaluatePDF(
         const shared::BSDFQuery &query, const Vector3D &vSampled) const {
-        return m_bsdf.evaluatePDF(query, vSampled);
+        float dirPDensity;
+        if (m_inMedium)
+            dirPDensity = m_pf.evaluatePDF(query, vSampled);
+        else
+            dirPDensity = m_bsdf.evaluatePDF(query, vSampled);
+        return dirPDensity;
     }
     CUDA_DEVICE_FUNCTION RGBSpectrum evaluateDHReflectanceEstimate(const shared::BSDFQuery &query) const {
-        return m_bsdf.evaluateDHReflectanceEstimate(query);
+        if (m_inMedium)
+            return RGBSpectrum::Zero();
+        else
+            return m_bsdf.evaluateDHReflectanceEstimate(query);
     }
 };
 
 template <>
 class BSDFTemplate<true> {
-    static constexpr uint32_t NumDwords = 16;
-    shared::BSDFGetSurfaceParameters m_getSurfaceParameters;
-    shared::BSDFSampleF m_sampleF;
-    shared::BSDFEvaluateF m_evaluateF;
-    shared::BSDFEvaluatePDF m_evaluatePDF;
-    shared::BSDFEvaluateDHReflectanceEstimate m_evaluateDHReflectanceEstimate;
-    uint32_t m_data[NumDwords];
+    union {
+        struct {
+            static constexpr uint32_t NumDwords = 16;
+            shared::BSDFGetSurfaceParameters getSurfaceParameters;
+            shared::BSDFSampleF sampleF;
+            shared::BSDFEvaluateF evaluateF;
+            shared::BSDFEvaluatePDF evaluatePDF;
+            shared::BSDFEvaluateDHReflectanceEstimate evaluateDHReflectanceEstimate;
+            uint32_t data[NumDwords];
+        } m_s;
+        struct {
+            IsotropicPhaseFunction pf;
+            RGBSpectrum scatteringAlbedo;
+        } m_m;
+    };
+    uint32_t m_inMedium : 1;
 
 public:
+    CUDA_DEVICE_FUNCTION BSDFTemplate() {}
+
     CUDA_DEVICE_FUNCTION void setup(
         const shared::SurfaceMaterial &matData, const TexCoord2D &texCoord,
         shared::BSDFBuildFlags flags = shared::BSDFBuildFlags::None) {
-        matData.setupBSDFBody(matData, texCoord, m_data, flags);
+        matData.setupBSDFBody(matData, texCoord, m_s.data, flags);
         const shared::BSDFProcedureSet &procSet = getBSDFProcedureSet(matData.bsdfProcSetSlot);
-        m_getSurfaceParameters = procSet.getSurfaceParameters;
-        m_sampleF = procSet.sampleF;
-        m_evaluateF = procSet.evaluateF;
-        m_evaluatePDF = procSet.evaluatePDF;
-        m_evaluateDHReflectanceEstimate = procSet.evaluateDHReflectanceEstimate;
+        m_s.getSurfaceParameters = procSet.getSurfaceParameters;
+        m_s.sampleF = procSet.sampleF;
+        m_s.evaluateF = procSet.evaluateF;
+        m_s.evaluatePDF = procSet.evaluatePDF;
+        m_s.evaluateDHReflectanceEstimate = procSet.evaluateDHReflectanceEstimate;
+        m_inMedium = false;
+    }
+    CUDA_DEVICE_FUNCTION void setup(
+        const RGBSpectrum scatteringAlbedo,
+        shared::BSDFBuildFlags flags = shared::BSDFBuildFlags::None) {
+        m_m.scatteringAlbedo = scatteringAlbedo;
+        m_inMedium = true;
+    }
+    CUDA_DEVICE_FUNCTION bool isInMedium() const {
+        return m_inMedium;
     }
     CUDA_DEVICE_FUNCTION void getSurfaceParameters(
         RGBSpectrum* diffuseReflectance, RGBSpectrum* specularReflectance, float* roughness) const {
-        return m_getSurfaceParameters(m_data, diffuseReflectance, specularReflectance, roughness);
+        if (m_inMedium) {
+            *diffuseReflectance = m_m.scatteringAlbedo;
+            *specularReflectance = RGBSpectrum::Zero();
+            *roughness = 0.0f;
+            return;
+        }
+
+        return m_s.getSurfaceParameters(m_s.data, diffuseReflectance, specularReflectance, roughness);
     }
     CUDA_DEVICE_FUNCTION RGBSpectrum sampleF(
         const shared::BSDFQuery &query, const shared::BSDFSample &smp,
         shared::BSDFQueryResult* result) const {
-        RGBSpectrum fsValue = m_sampleF(m_data, query, smp, result);
+        RGBSpectrum fsValue;
+        if (m_inMedium)
+            fsValue = m_m.scatteringAlbedo * m_m.pf.sampleF(query, smp, result);
+        else
+            fsValue = m_s.sampleF(m_s.data, query, smp, result);
         return fsValue;
     }
     CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(
         const shared::BSDFQuery &query, const Vector3D &vSampled) const {
-        RGBSpectrum fsValue = m_evaluateF(m_data, query, vSampled);
+        RGBSpectrum fsValue;
+        if (m_inMedium)
+            fsValue = m_m.scatteringAlbedo * m_m.pf.evaluateF(query, vSampled);
+        else
+            fsValue = m_s.evaluateF(m_s.data, query, vSampled);
         return fsValue;
     }
     CUDA_DEVICE_FUNCTION float evaluatePDF(
         const shared::BSDFQuery &query, const Vector3D &vSampled) const {
-        return m_evaluatePDF(m_data, query, vSampled);
+        float dirPDensity;
+        if (m_inMedium)
+            dirPDensity = m_m.pf.evaluatePDF(query, vSampled);
+        else
+            dirPDensity = m_s.evaluatePDF(m_s.data, query, vSampled);
+        return dirPDensity;
     }
     CUDA_DEVICE_FUNCTION RGBSpectrum evaluateDHReflectanceEstimate(const shared::BSDFQuery &query) const {
-        return m_evaluateDHReflectanceEstimate(m_data, query);
+        if (m_inMedium)
+            return RGBSpectrum::Zero();
+        else
+            return m_s.evaluateDHReflectanceEstimate(m_s.data, query);
     }
 };
 
@@ -2096,6 +2210,11 @@ public:
         shared::BSDFBuildFlags flags = shared::BSDFBuildFlags::None) {
         m_body.setup(matData, texCoord, flags);
     }
+    CUDA_DEVICE_FUNCTION void setup(
+        const RGBSpectrum &scatteringAlbedo,
+        shared::BSDFBuildFlags flags = shared::BSDFBuildFlags::None) {
+        m_body.setup(scatteringAlbedo, flags);
+    }
     CUDA_DEVICE_FUNCTION void getSurfaceParameters(
         RGBSpectrum* diffuseReflectance, RGBSpectrum* specularReflectance, float* roughness) const {
         return m_body.getSurfaceParameters(diffuseReflectance, specularReflectance, roughness);
@@ -2104,6 +2223,8 @@ public:
         const shared::BSDFQuery &query, const shared::BSDFSample &smp,
         shared::BSDFQueryResult* result) const {
         RGBSpectrum fsValue = m_body.sampleF(query, smp, result);
+        if (m_body.isInMedium())
+            return fsValue;
 
         float snCorrection = std::fabs(result->dirLocal.z / dot(result->dirLocal, query.geometricNormalLocal));
         if (!isfinite(snCorrection))
@@ -2124,11 +2245,16 @@ public:
     }
     CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(
         const shared::BSDFQuery &query, const Vector3D &vSampled) const {
-        float snCorrection = std::fabs(vSampled.z / dot(vSampled, query.geometricNormalLocal));
-        if (!isfinite(snCorrection))
-            return RGBSpectrum::Zero();
+        float snCorrection = 0.0f;
+        if (!m_body.isInMedium()) {
+            snCorrection = std::fabs(vSampled.z / dot(vSampled, query.geometricNormalLocal));
+            if (!isfinite(snCorrection))
+                return RGBSpectrum::Zero();
+        }
 
         RGBSpectrum fsValue = m_body.evaluateF(query, vSampled);
+        if (m_body.isInMedium())
+            return fsValue;
 
         fsValue *= snCorrection;
         Assert(

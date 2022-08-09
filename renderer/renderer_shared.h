@@ -3,6 +3,7 @@
 #include "../common/common_renderer_types.h"
 #include <nanovdb/NanoVDB.h>
 #include <nanovdb/util/Ray.h>
+#include <nanovdb/util/SampleFromVoxels.h>
 
 namespace rtc8::shared {
 
@@ -48,6 +49,7 @@ struct StaticPipelineLaunchParameters {
     optixu::NativeBlockBuffer2D<RGBSpectrum> accumBuffer;
 
     nanovdb::FloatGrid* densityGrid;
+    nanovdb::BBox<nanovdb::Vec3f> densityGridBBox;
     float majorant;
 };
 
@@ -77,7 +79,7 @@ struct PipelineLaunchParameters {
 
 
 using ClosestRaySignature = optixu::PayloadSignature<
-    uint32_t, uint32_t, uint32_t, float, float>;
+    uint32_t, uint32_t, uint32_t, float, float, float>;
 using VisibilityRaySignature = optixu::PayloadSignature<float>;
 
 } // namespace rtc8::shared
