@@ -1929,16 +1929,21 @@ namespace optixu {
                                         stream));
         m->buildInput.instanceArray.instances = m->children.size() > 0 ? instanceBuffer.getCUdeviceptr() : 0;
 
-        bool compactionEnabled = (m->buildOptions.buildFlags & OPTIX_BUILD_FLAG_ALLOW_COMPACTION) != 0;
+        if (m->children.size() > 0) {
+            bool compactionEnabled = (m->buildOptions.buildFlags & OPTIX_BUILD_FLAG_ALLOW_COMPACTION) != 0;
 
-        m->buildOptions.operation = OPTIX_BUILD_OPERATION_BUILD;
-        OPTIX_CHECK(optixAccelBuild(m->getRawContext(), stream, &m->buildOptions, &m->buildInput, 1,
-                                    scratchBuffer.getCUdeviceptr(), scratchBuffer.sizeInBytes(),
-                                    accelBuffer.getCUdeviceptr(), accelBuffer.sizeInBytes(),
-                                    &m->handle,
-                                    compactionEnabled ? &m->propertyCompactedSize : nullptr,
-                                    compactionEnabled ? 1 : 0));
-        CUDADRV_CHECK(cuEventRecord(m->finishEvent, stream));
+            m->buildOptions.operation = OPTIX_BUILD_OPERATION_BUILD;
+            OPTIX_CHECK(optixAccelBuild(m->getRawContext(), stream, &m->buildOptions, &m->buildInput, 1,
+                                        scratchBuffer.getCUdeviceptr(), scratchBuffer.sizeInBytes(),
+                                        accelBuffer.getCUdeviceptr(), accelBuffer.sizeInBytes(),
+                                        &m->handle,
+                                        compactionEnabled ? &m->propertyCompactedSize : nullptr,
+                                        compactionEnabled ? 1 : 0));
+            CUDADRV_CHECK(cuEventRecord(m->finishEvent, stream));
+        }
+        else {
+            m->handle = 0;
+        }
 
         m->instanceBuffer = instanceBuffer;
         m->accelBuffer = accelBuffer;

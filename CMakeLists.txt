@@ -40,6 +40,7 @@ file(
     "ext/fpng/src/fpng.h"
     "ext/fpng/src/fpng.cpp"
     "ext/hosek_wilkie_2013/*"
+    "ext/nanovdb/nanovdb/*"
 )
 list(
     FILTER COMMON_SOURCES INCLUDE REGEX
@@ -164,6 +165,9 @@ function(set_common_sources)
     source_group(
         "non-essentials/ext/hosek_wilkie" REGULAR_EXPRESSION
         "../ext/hosek_wilkie_2013/[^/]*\.(h|hpp|c|cpp)$")
+    source_group(
+        "non-essentials/ext/nanovdb" REGULAR_EXPRESSION
+        "../ext/nanovdb/nanovdb/.*\.(h|hpp|c|cpp)$")
     source_group(
         "non-essentials/ext/tinyexr/miniz" REGULAR_EXPRESSION
         "../ext/tinyexr/deps/miniz/[^/]*\.(h|hpp|c|cpp)$")

@@ -61,6 +61,8 @@ void GPUEnvironment::initialize() {
         computeLightProbs.cudaModule, "computeMipOfImportanceMap", cudau::dim3(32), 0);
     computeLightProbs.testImportanceMap.set(
         computeLightProbs.cudaModule, "testImportanceMap", cudau::dim3(32), 0);
+    CUDADRV_CHECK(cuModuleGetGlobal(
+        &computeLightProbs.debugPlp, &symbolSize, computeLightProbs.cudaModule, "plp"));
 
     CUDADRV_CHECK(cuModuleLoad(
         &arHosekSkyModel.cudaModule,
@@ -464,6 +466,64 @@ void Scene::checkLightInstDistribution(CUdeviceptr lightInstDistAddr) {
         cdfs.data(), reinterpret_cast<CUdeviceptr>(lightInstDist.cdfs()),
         numValues * sizeof(float)));
     printf("");
+}
+
+void Scene::allocateVolumeGrid(
+    nanovdb::GridHandle<nanovdb::CudaDeviceBuffer> &gridHandle, float densityCoeff) {
+    m_gridHandle = std::move(gridHandle);
+    auto gridOnHost = m_gridHandle.grid<float>();
+    nanovdb::BBoxR bbox = gridOnHost->worldBBox();
+    nanovdb::CoordBBox coordBBox = gridOnHost->indexBBox();
+
+    const nanovdb::DefaultReadAccessor<float> &acc = gridOnHost->tree().getAccessor();
+    CompensatedSum<float> sumValues;
+    float minValue = INFINITY;
+    m_majorant = -INFINITY;
+    for (int ix = coordBBox.min()[0]; ix < coordBBox.max()[0]; ++ix) {
+        for (int iy = coordBBox.min()[1]; iy < coordBBox.max()[1]; ++iy) {
+            for (int iz = coordBBox.min()[2]; iz < coordBBox.max()[2]; ++iz) {
+                float density = acc.getValue({ ix, iy, iz });
+                minValue = std::min(density, minValue);
+                m_majorant = std::max(density, m_majorant);
+                sumValues += density;
+            }
+        }
+    }
+    float avgValue = sumValues /
+        (coordBBox.max()[0] - coordBBox.min()[0]) *
+        (coordBBox.max()[1] - coordBBox.min()[1]) *
+        (coordBBox.max()[2] - coordBBox.min()[2]);
+
+    m_densityGridBBox = nanovdb::BBox<nanovdb::Vec3f>(
+        nanovdb::Vec3f(bbox.min()[0], bbox.min()[1], bbox.min()[2]),
+        nanovdb::Vec3f(bbox.max()[0], bbox.max()[1], bbox.max()[2]));
+    m_densityCoeff = densityCoeff;
+
+    m_gridHandle.deviceUpload();
+    m_densityGrid = m_gridHandle.deviceGrid<float>();
+    {
+        size_t gridSize = gridOnHost->gridSize();
+        auto mem = reinterpret_cast<nanovdb::FloatGrid*>(malloc(gridSize));
+        CUDADRV_CHECK(cuMemcpyDtoH(
+            mem, reinterpret_cast<CUdeviceptr>(m_densityGrid),
+            gridSize));
+        CUdeviceptr gpuMem;
+        CUDADRV_CHECK(cuMemAlloc(&gpuMem, gridSize));
+        m_densityGrid = reinterpret_cast<nanovdb::FloatGrid*>(gpuMem);
+        CUDADRV_CHECK(cuMemcpyHtoD(
+            gpuMem, mem,
+            gridSize));
+        free(mem);
+    }
+}
+
+void Scene::setVolumeGrid(
+    nanovdb::FloatGrid** densityGrid, nanovdb::BBox<nanovdb::Vec3f>* gridBBox,
+    float* densityCoeff, float* majorant) {
+    *densityGrid = m_densityGrid;
+    *gridBBox = m_densityGridBBox;
+    *densityCoeff = m_densityCoeff;
+    *majorant = m_majorant * m_densityCoeff;
 }
 
 
@@ -2262,6 +2322,15 @@ void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* render
             inst->setGeometryGroup(geomGroupInst.geomGroup, geomGroupInst.transform);
             inst->setKeyStates(states, instInfo.hasCyclicAnim);
         }
+    }
+
+
+
+    {
+        std::filesystem::path volPath =
+            R"(C:\Users\shocker_0x15\repos\instant-ngp\data\volume\wdas_cloud_quarter.nvdb)";
+        auto gridHandle = nanovdb::io::readGrid<nanovdb::CudaDeviceBuffer>(volPath.string());
+        g_scene.allocateVolumeGrid(gridHandle, 0.3f);
     }
 }
 

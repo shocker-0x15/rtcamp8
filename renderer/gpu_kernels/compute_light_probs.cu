@@ -1,5 +1,6 @@
 ﻿#define PURE_CUDA
 #include "../../common/common_renderer_types.h"
+#include "../renderer_shared.h" // only for debug for now
 
 using namespace rtc8;
 using namespace rtc8::shared;
@@ -144,6 +145,11 @@ CUDA_DEVICE_KERNEL void finalizeWorldDimInfo(
 
     auto aabbAsInt = *reinterpret_cast<BoundingBox3DAsOrderedInt*>(&worldDimInfo->aabb);
     BoundingBox3D aabb = static_cast<BoundingBox3D>(aabbAsInt);
+
+    auto volAabb = plp.s->densityGridBBox;
+    aabb.unify(Point3D(volAabb.min()[0], volAabb.min()[1], volAabb.min()[2]));
+    aabb.unify(Point3D(volAabb.max()[0], volAabb.max()[1], volAabb.max()[2]));
+
     worldDimInfo->aabb = aabb;
     worldDimInfo->center = aabb.calcCentroid();
     Vector3D d = aabb.maxP - worldDimInfo->center;

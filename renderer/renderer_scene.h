@@ -4,6 +4,10 @@
 #include "../common/common_host.h"
 #include "../ext/cubd/cubd.h"
 
+#include <nanovdb/util/IO.h>
+#include <nanovdb/util/CudaDeviceBuffer.h>
+#include <nanovdb/util/Ray.h>
+
 namespace rtc8 {
 
 constexpr cudau::BufferType bufferType = cudau::BufferType::Device;
@@ -39,6 +43,7 @@ struct GPUEnvironment {
         cudau::Kernel computeFirstMipOfEnvIBLImportanceMap;
         cudau::Kernel computeMipOfImportanceMap;
         cudau::Kernel testImportanceMap;
+        CUdeviceptr debugPlp;
     } computeLightProbs;
 
     struct ArHosekSkyModel {
@@ -131,6 +136,12 @@ class Scene {
     cudau::Buffer m_optixAsMem;
     cudau::TypedBuffer<OptixInstance> m_optixInstanceBuffer;
 
+    nanovdb::GridHandle<nanovdb::CudaDeviceBuffer> m_gridHandle;
+    nanovdb::FloatGrid* m_densityGrid;
+    nanovdb::BBox<nanovdb::Vec3f> m_densityGridBBox;
+    float m_densityCoeff;
+    float m_majorant;
+
     cudau::Buffer m_hitGroupSbt;
 
     LightDistribution lightInstDist;
@@ -180,6 +191,9 @@ public:
 
     void allocateInstance(const Ref<Instance> &inst);
 
+    void allocateVolumeGrid(
+        nanovdb::GridHandle<nanovdb::CudaDeviceBuffer> &gridHandle, float densityCoeff);
+
 
 
     BoundingBox3D computeSceneAABB(float timePoint) const;
@@ -199,6 +213,10 @@ public:
     shared::Instance* getInstancesOnDevice() const {
         return m_instanceBuffer.getDevicePointer();
     }
+
+    void setVolumeGrid(
+        nanovdb::FloatGrid** densityGrid, nanovdb::BBox<nanovdb::Vec3f>* gridBBox,
+        float* densityCoeff, float* majorant);
 
 
 

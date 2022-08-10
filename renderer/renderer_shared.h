@@ -50,6 +50,7 @@ struct StaticPipelineLaunchParameters {
 
     nanovdb::FloatGrid* densityGrid;
     nanovdb::BBox<nanovdb::Vec3f> densityGridBBox;
+    float densityCoeff;
     float majorant;
 };
 

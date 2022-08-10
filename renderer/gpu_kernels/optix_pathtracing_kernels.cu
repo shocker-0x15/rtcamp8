@@ -364,15 +364,28 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
         PathTracingRayType::Visibility, shared::maxNumRayTypes, PathTracingRayType::Visibility,
         visibility);
 
-    if (plp.s->densityGrid) {
-        //const nvdb::DefaultReadAccessor<float> &acc = plp.s->densityGrid->getAccessor();
+    if (plp.s->densityGrid && visibility > 0.0f) {
+        const nvdb::FloatGrid* densityGrid = plp.s->densityGrid;
+        const float densityCoeff = plp.s->densityCoeff;
+        const float majorant = plp.s->majorant;
+        const nvdb::DefaultReadAccessor<float> &acc = densityGrid->getAccessor();
+        const auto sampler = nvdb::createSampler<1, nvdb::DefaultReadAccessor<float>, false>(acc);
+
         nvdb::Ray<float> nvdbRay(
             nvdb::Vec3f(lightPoint.x, lightPoint.y, lightPoint.z),
             nvdb::Vec3f(shadowRayDir.x, shadowRayDir.y, shadowRayDir.z),
             0.0f, traceLength);
-
         if (nvdbRay.clip(plp.s->densityGridBBox)) {
-            visibility *= std::exp(-plp.s->majorant * (nvdbRay.t1() - nvdbRay.t0()));
+            float fpDist = std::fmax(0.0f, nvdbRay.t0());
+            while (true) {
+                fpDist += -std::log(1.0f - rng.getFloat0cTo1o()) / majorant;
+                if (fpDist > nvdbRay.t1())
+                    break;
+                nvdb::Vec3f evalP = nvdbRay(fpDist);
+                nvdb::Vec3f fIdx = densityGrid->worldToIndexF(evalP);
+                float density = densityCoeff * sampler(fIdx);
+                visibility *= (1 - density / majorant);
+            }
         }
     }
 
@@ -439,20 +452,31 @@ CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
 
         bool volEventHappens = false;
         if (plp.s->densityGrid) {
-            //const nvdb::DefaultReadAccessor<float> &acc = plp.s->densityGrid->getAccessor();
+            const nvdb::FloatGrid* densityGrid = plp.s->densityGrid;
+            const float densityCoeff = plp.s->densityCoeff;
+            const float majorant = plp.s->majorant;
+            const nvdb::DefaultReadAccessor<float> &acc = densityGrid->getAccessor();
+            const auto sampler = nvdb::createSampler<1, nvdb::DefaultReadAccessor<float>, false>(acc);
+            auto map = densityGrid->map();
+
             nvdb::Ray<float> nvdbRay(
                 nvdb::Vec3f(rayOrigin.x, rayOrigin.y, rayOrigin.z),
                 nvdb::Vec3f(rayDirection.x, rayDirection.y, rayDirection.z),
                 0.0f, hitDist);
-            if (pathLength == 1 && DEBUG_MOUSE_POS_CONDITION)
-                printf("vol\n");
-
             if (nvdbRay.clip(plp.s->densityGridBBox)) {
                 float fpDist = std::fmax(0.0f, nvdbRay.t0());
-                fpDist += -std::log(1.0f - rng.getFloat0cTo1o()) / plp.s->majorant;
-                if (fpDist <= nvdbRay.t1()) {
-                    volEventHappens = true;
-                    hitDist = fpDist;
+                while (true) {
+                    fpDist += -std::log(1.0f - rng.getFloat0cTo1o()) / majorant;
+                    if (fpDist > nvdbRay.t1())
+                        break;
+                    nvdb::Vec3f evalP = nvdbRay(fpDist);
+                    nvdb::Vec3f fIdx = densityGrid->worldToIndexF(evalP);
+                    float density = densityCoeff * sampler(fIdx);
+                    if (rng.getFloat0cTo1o() < density / majorant) {
+                        volEventHappens = true;
+                        hitDist = fpDist;
+                        break;
+                    }
                 }
             }
         }
