@@ -785,6 +785,7 @@ class Instance {
         states[0] = m_keyStates[idx];
         states[1] = m_keyStates[std::min(static_cast<uint32_t>(idx) + 1, numStates - 1)];
         float t = safeDivide(timePoint - states[0].timePoint, states[1].timePoint - states[0].timePoint);
+        t = clamp(t, 0.0f, 1.0f);
         *scale = lerp(states[0].scale, states[1].scale, t);
         *orientation = slerp(states[0].orientation, states[1].orientation, t);
         *position = lerp(states[0].position, states[1].position, t);
@@ -888,6 +889,7 @@ public:
         states[0] = m_keyStates[idx];
         states[1] = m_keyStates[std::min(static_cast<uint32_t>(idx) + 1, numStates - 1)];
         float t = safeDivide(timePoint - states[0].timePoint, states[1].timePoint - states[0].timePoint);
+        t = clamp(t, 0.0f, 1.0f);
         Point3D position = lerp(states[0].position, states[1].position, t);
         Quaternion ori0 = qLookAt(states[0].positionLookAt - states[0].position, states[0].up);
         Quaternion ori1 = qLookAt(states[1].positionLookAt - states[1].position, states[1].up);
@@ -1068,6 +1070,7 @@ protected:
         controlPoints->push_back(m_keyStates[std::min(static_cast<uint32_t>(idx) + 1, numStates - 1)]);
         *t = safeDivide(timePoint - controlPoints->at(0)->timePoint,
                         controlPoints->at(1)->timePoint - controlPoints->at(0)->timePoint);
+        *t = clamp(*t, 0.0f, 1.0f);
     }
     void interpolateStates(
         const std::vector<Ref<KeyEnvironmentState>> &states, float t,

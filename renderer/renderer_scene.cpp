@@ -501,20 +501,20 @@ void Scene::allocateVolumeGrid(
 
     m_gridHandle.deviceUpload();
     m_densityGrid = m_gridHandle.deviceGrid<float>();
-    {
-        size_t gridSize = gridOnHost->gridSize();
-        auto mem = reinterpret_cast<nanovdb::FloatGrid*>(malloc(gridSize));
-        CUDADRV_CHECK(cuMemcpyDtoH(
-            mem, reinterpret_cast<CUdeviceptr>(m_densityGrid),
-            gridSize));
-        CUdeviceptr gpuMem;
-        CUDADRV_CHECK(cuMemAlloc(&gpuMem, gridSize));
-        m_densityGrid = reinterpret_cast<nanovdb::FloatGrid*>(gpuMem);
-        CUDADRV_CHECK(cuMemcpyHtoD(
-            gpuMem, mem,
-            gridSize));
-        free(mem);
-    }
+    //{
+    //    size_t gridSize = gridOnHost->gridSize();
+    //    auto mem = reinterpret_cast<nanovdb::FloatGrid*>(malloc(gridSize));
+    //    CUDADRV_CHECK(cuMemcpyDtoH(
+    //        mem, reinterpret_cast<CUdeviceptr>(m_densityGrid),
+    //        gridSize));
+    //    CUdeviceptr gpuMem;
+    //    CUDADRV_CHECK(cuMemAlloc(&gpuMem, gridSize));
+    //    m_densityGrid = reinterpret_cast<nanovdb::FloatGrid*>(gpuMem);
+    //    CUDADRV_CHECK(cuMemcpyHtoD(
+    //        gpuMem, mem,
+    //        gridSize));
+    //    free(mem);
+    //}
 }
 
 void Scene::setVolumeGrid(

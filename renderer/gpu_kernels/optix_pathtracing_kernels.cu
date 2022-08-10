@@ -409,6 +409,8 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
     return ret;
 }
 
+
+
 CUDA_DEVICE_KERNEL void RT_RG_NAME(pathTrace)() {
     uint2 launchIndex = make_uint2(optixGetLaunchIndex());
 
