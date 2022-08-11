@@ -34,6 +34,22 @@ void GPUEnvironment::initialize() {
     size_t symbolSize;
 
     CUDADRV_CHECK(cuModuleLoad(
+        &nrcSetUpKernelsModule,
+        (exeDir / "renderer/ptxes/nrc_set_up_kernels.ptx").string().c_str()));
+    prepareNRC.set(
+        nrcSetUpKernelsModule, "prepareNRC", cudau::dim3(32), 0);
+    propagateRadianceValues.set(
+        nrcSetUpKernelsModule, "propagateRadianceValues", cudau::dim3(32), 0);
+    shuffleTrainingData.set(
+        nrcSetUpKernelsModule, "shuffleTrainingData", cudau::dim3(32), 0);
+    accumulateInferredRadianceValues.set(
+        nrcSetUpKernelsModule, "accumulateInferredRadianceValues", cudau::dim3(32), 0);
+    CUDADRV_CHECK(cuModuleGetGlobal(
+        &plpForNrcSetUpKernelsModule, &symbolSize, nrcSetUpKernelsModule, "plp"));
+
+    neuralRadianceCache.initialize(PositionEncoding::HashGrid, 2, 0.01f);
+
+    CUDADRV_CHECK(cuModuleLoad(
         &postProcessKernelsModule,
         (exeDir / "renderer/ptxes/post_process_kernels.ptx").string().c_str()));
     applyToneMap.set(postProcessKernelsModule, "applyToneMap", cudau::dim3(8, 8), 0);
@@ -161,6 +177,10 @@ void GPUEnvironment::initialize() {
 
         pipeline.entryPoints[PathTracingEntryPoint::pathTrace] =
             p.createRayGenProgram(m, RT_RG_NAME_STR("pathTrace"));
+        pipeline.entryPoints[PathTracingEntryPoint::generateTrainingData] =
+            p.createRayGenProgram(m, RT_RG_NAME_STR("generateTrainingData"));
+        pipeline.entryPoints[PathTracingEntryPoint::pathTraceWithNRC] =
+            p.createRayGenProgram(m, RT_RG_NAME_STR("pathTraceWithNRC"));
 
         optixu::ProgramGroup chPathTrace = p.createHitProgramGroupForTriangleIS(
             m, RT_CH_NAME_STR("pathTrace"),

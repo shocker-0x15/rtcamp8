@@ -66,6 +66,12 @@ static cudau::Array rngBuffer;
 static cudau::Array accumBuffer;
 static glu::Texture2D gfxOutputBuffer;
 static cudau::Array cudaOutputBuffer;
+static uint32_t maxNumTrainingSuffixes;
+static cudau::TypedBuffer<shared::RadianceQuery> inferenceRadianceQueryBuffer;
+static cudau::TypedBuffer<shared::TerminalInfo> inferenceTerminalInfoBuffer;
+cudau::TypedBuffer<shared::TrainingSuffixTerminalInfo> trainSuffixTerminalInfoBuffer;
+static cudau::TypedBuffer<RGBSpectrum> inferredRadianceBuffer;
+static cudau::Array perFrameContributionBuffer;
 static bool withGfx = true;
 
 const void initializeScreenRelatedBuffers(uint32_t screenWidth, uint32_t screenHeight) {
@@ -101,6 +107,22 @@ const void initializeScreenRelatedBuffers(uint32_t screenWidth, uint32_t screenH
             cudau::ArraySurface::Enable, cudau::ArrayTextureGather::Disable,
             screenWidth, screenHeight, 1);
     }
+
+    maxNumTrainingSuffixes = screenWidth * screenHeight;
+    uint32_t numPixels = screenWidth * screenHeight;
+    uint32_t inferenceBatchSize = (numPixels + 127) / 128 * 128;
+    inferenceRadianceQueryBuffer.initialize(
+        g_gpuEnv.cuContext, bufferType, inferenceBatchSize);
+    inferenceTerminalInfoBuffer.initialize(
+        g_gpuEnv.cuContext, bufferType, numPixels);
+    trainSuffixTerminalInfoBuffer.initialize(
+        g_gpuEnv.cuContext, bufferType, maxNumTrainingSuffixes);
+    inferredRadianceBuffer.initialize(
+        g_gpuEnv.cuContext, bufferType, inferenceBatchSize);
+    perFrameContributionBuffer.initialize2D(
+        g_gpuEnv.cuContext, cudau::ArrayElementType::UInt32, nextPowerOf2((sizeof(RGBSpectrum) + 3) / 4),
+        cudau::ArraySurface::Enable, cudau::ArrayTextureGather::Disable,
+        screenWidth, screenHeight, 1);
 };
 
 const void resizeScreenRelatedBuffers(uint32_t screenWidth, uint32_t screenHeight) {
@@ -132,15 +154,79 @@ const void resizeScreenRelatedBuffers(uint32_t screenWidth, uint32_t screenHeigh
     else {
         cudaOutputBuffer.resize(screenWidth, screenHeight);
     }
+
+    maxNumTrainingSuffixes = screenWidth * screenHeight;
+    uint32_t numPixels = screenWidth * screenHeight;
+    uint32_t inferenceBatchSize = (numPixels + 127) / 128 * 128;
+    inferenceRadianceQueryBuffer.resize(inferenceBatchSize);
+    inferenceTerminalInfoBuffer.resize(numPixels);
+    trainSuffixTerminalInfoBuffer.resize(maxNumTrainingSuffixes);
+    inferredRadianceBuffer.resize(inferenceBatchSize);
+    perFrameContributionBuffer.resize(screenWidth, screenHeight, 1);
 };
 
 const void finalizeScreenRelatedBuffers() {
+    perFrameContributionBuffer.finalize();
+    inferredRadianceBuffer.finalize();
+    trainSuffixTerminalInfoBuffer.finalize();
+    inferenceTerminalInfoBuffer.finalize();
+    inferenceRadianceQueryBuffer.finalize();
+
     cudaOutputBuffer.finalize();
     gfxOutputBuffer.finalize();
     accumBuffer.finalize();
 
     rngBuffer.finalize();
 };
+
+
+
+cudau::TypedBuffer<uint32_t> numTraningDataBuffer;
+cudau::TypedBuffer<int2> trainImageSizeBuffer;
+cudau::TypedBuffer<shared::RGBSpectrumAsOrderedInt> targetMinMaxBuffer;
+cudau::TypedBuffer<RGBSpectrum> targetAvgBuffer;
+cudau::TypedBuffer<shared::RadianceQuery> trainRadianceQueryBuffer[2];
+cudau::TypedBuffer<RGBSpectrum> trainTargetBuffer[2];
+cudau::TypedBuffer<shared::TrainingVertexInfo> trainVertexInfoBuffer;
+cudau::TypedBuffer<shared::TrainingVertexInfo> shuffledTrainVertexInfoBuffer;
+cudau::TypedBuffer<shared::LinearCongruentialGenerator> dataShufflerBuffer;
+
+static void setUpNrcBuffers() {
+    numTraningDataBuffer.initialize(
+        g_gpuEnv.cuContext, bufferType, 2);
+    trainImageSizeBuffer.initialize(
+        g_gpuEnv.cuContext, bufferType, 2);
+    targetMinMaxBuffer.initialize(
+        g_gpuEnv.cuContext, bufferType, 2 * 2);
+    targetAvgBuffer.initialize(
+        g_gpuEnv.cuContext, bufferType, 2);
+
+    for (int i = 0; i < 2; ++i) {
+        trainRadianceQueryBuffer[i].initialize(
+            g_gpuEnv.cuContext, bufferType, shared::trainBufferSize);
+        trainTargetBuffer[i].initialize(
+            g_gpuEnv.cuContext, bufferType, shared::trainBufferSize);
+    }
+    trainVertexInfoBuffer.initialize(
+        g_gpuEnv.cuContext, bufferType, shared::trainBufferSize);
+    if constexpr (shared::debugTrainingDataShuffle)
+        shuffledTrainVertexInfoBuffer.initialize(
+            g_gpuEnv.cuContext, bufferType, shared::trainBufferSize);
+    dataShufflerBuffer.initialize(
+        g_gpuEnv.cuContext, bufferType, shared::trainBufferSize);
+    {
+        shared::LinearCongruentialGenerator lcg;
+        lcg.setState(471313181);
+        shared::LinearCongruentialGenerator* dataShufflers = dataShufflerBuffer.map();
+        for (int i = 0; i < shared::numTrainingDataPerFrame; ++i) {
+            lcg.next();
+            dataShufflers[i] = lcg;
+        }
+        dataShufflerBuffer.unmap();
+    }
+}
+
+
 
 static shared::StaticPipelineLaunchParameters staticPlpOnHost;
 static shared::PerFramePipelineLaunchParameters perFramePlpOnHost;
@@ -149,7 +235,7 @@ static CUdeviceptr staticPlpOnDevice;
 static CUdeviceptr perFramePlpOnDevice;
 static CUdeviceptr plpOnDevice;
 
-const void setUpPipelineLaunchParameters(uint32_t screenWidth, uint32_t screenHeight) {
+static void setUpPipelineLaunchParameters(uint32_t screenWidth, uint32_t screenHeight) {
     {
         staticPlpOnHost.bsdfProcedureSets = g_gpuEnv.bsdfProcedureSetBuffer.getDevicePointer();
         staticPlpOnHost.surfaceMaterials = g_scene.getSurfaceMaterialsOnDevice();
@@ -163,6 +249,28 @@ const void setUpPipelineLaunchParameters(uint32_t screenWidth, uint32_t screenHe
         staticPlpOnHost.imageSize = int2(screenWidth, screenHeight);
         staticPlpOnHost.rngBuffer = rngBuffer.getSurfaceObject(0);
         staticPlpOnHost.accumBuffer = accumBuffer.getSurfaceObject(0);
+
+        for (int i = 0; i < 2; ++i) {
+            staticPlpOnHost.numTrainingData[i] = numTraningDataBuffer.getDevicePointerAt(i);
+            staticPlpOnHost.trainImageSize[i] = trainImageSizeBuffer.getDevicePointerAt(i);
+            staticPlpOnHost.targetMinMax[i][0] = targetMinMaxBuffer.getDevicePointerAt(2 * i + 0);
+            staticPlpOnHost.targetMinMax[i][1] = targetMinMaxBuffer.getDevicePointerAt(2 * i + 1);
+            staticPlpOnHost.targetAvg[i] = targetAvgBuffer.getDevicePointerAt(i);
+        }
+
+        staticPlpOnHost.maxNumTrainingSuffixes = maxNumTrainingSuffixes;
+        staticPlpOnHost.inferenceRadianceQueryBuffer = inferenceRadianceQueryBuffer.getDevicePointer();
+        staticPlpOnHost.inferenceTerminalInfoBuffer = inferenceTerminalInfoBuffer.getDevicePointer();
+        staticPlpOnHost.trainSuffixTerminalInfoBuffer = trainSuffixTerminalInfoBuffer.getDevicePointer();
+        staticPlpOnHost.inferredRadianceBuffer = inferredRadianceBuffer.getDevicePointer();
+        staticPlpOnHost.perFrameContributionBuffer = perFrameContributionBuffer.getSurfaceObject(0);
+        for (int i = 0; i < 2; ++i) {
+            staticPlpOnHost.trainRadianceQueryBuffer[i] = trainRadianceQueryBuffer[i].getDevicePointer();
+            staticPlpOnHost.trainTargetBuffer[i] = trainTargetBuffer[i].getDevicePointer();
+        }
+        staticPlpOnHost.trainVertexInfoBuffer = trainVertexInfoBuffer.getDevicePointer();
+        staticPlpOnHost.shuffledTrainVertexInfoBuffer = shuffledTrainVertexInfoBuffer.getDevicePointer();
+        staticPlpOnHost.dataShufflerBuffer = dataShufflerBuffer.getDevicePointer();
     }
     CUDADRV_CHECK(cuMemAlloc(&staticPlpOnDevice, sizeof(staticPlpOnHost)));
     CUDADRV_CHECK(cuMemcpyHtoD(staticPlpOnDevice, &staticPlpOnHost, sizeof(staticPlpOnHost)));
@@ -180,6 +288,7 @@ const void setUpPipelineLaunchParameters(uint32_t screenWidth, uint32_t screenHe
     plpOnHost.f = reinterpret_cast<shared::PerFramePipelineLaunchParameters*>(perFramePlpOnDevice);
     CUDADRV_CHECK(cuMemAlloc(&plpOnDevice, sizeof(plpOnHost)));
     CUDADRV_CHECK(cuMemcpyHtoD(plpOnDevice, &plpOnHost, sizeof(plpOnHost)));
+    CUDADRV_CHECK(cuMemcpyHtoD(g_gpuEnv.plpForNrcSetUpKernelsModule, &plpOnHost, sizeof(plpOnHost)));
     CUDADRV_CHECK(cuMemcpyHtoD(g_gpuEnv.plpForPostProcessKernelsModule, &plpOnHost, sizeof(plpOnHost)));
     CUDADRV_CHECK(cuMemcpyHtoD(g_gpuEnv.computeLightProbs.debugPlp, &plpOnHost, sizeof(plpOnHost)));
 }
@@ -412,6 +521,20 @@ static int32_t runGuiApp() {
 
 
 
+    // JP: フルスクリーンクアッド(or 三角形)用の空のVAO。
+    // EN: Empty VAO for full screen qud (or triangle).
+    glu::VertexArray vertexArrayForFullScreen;
+    vertexArrayForFullScreen.initialize();
+
+    // JP: OptiXの結果をフレームバッファーにコピーするシェーダー。
+    // EN: Shader to copy OptiX result to a frame buffer.
+    glu::GraphicsProgram drawOptiXResultShader;
+    drawOptiXResultShader.initializeVSPS(
+        readTxtFile(exeDir / "renderer/shaders/drawOptiXResult.vert"),
+        readTxtFile(exeDir / "renderer/shaders/drawOptiXResult.frag"));
+
+
+
     // ----------------------------------------------------------------
     // JP: 入力コールバックの設定。
     // EN: Set up input callbacks.
@@ -550,20 +673,8 @@ static int32_t runGuiApp() {
 
 
 
-    // JP: フルスクリーンクアッド(or 三角形)用の空のVAO。
-    // EN: Empty VAO for full screen qud (or triangle).
-    glu::VertexArray vertexArrayForFullScreen;
-    vertexArrayForFullScreen.initialize();
-
-    // JP: OptiXの結果をフレームバッファーにコピーするシェーダー。
-    // EN: Shader to copy OptiX result to a frame buffer.
-    glu::GraphicsProgram drawOptiXResultShader;
-    drawOptiXResultShader.initializeVSPS(
-        readTxtFile(exeDir / "renderer/shaders/drawOptiXResult.vert"),
-        readTxtFile(exeDir / "renderer/shaders/drawOptiXResult.frag"));
-
-
-
+    setUpNrcBuffers();
+    
     BoundingBox3D initialSceneAABB = g_scene.computeSceneAABB(renderConfigs.timeBegin);
 
     setUpPipelineLaunchParameters(renderTargetSizeX, renderTargetSizeY);
@@ -613,13 +724,17 @@ static int32_t runGuiApp() {
         cudau::Timer frame;
         cudau::Timer buildASs;
         cudau::Timer computeLightProbs;
-        cudau::Timer pathTracing;
+        cudau::Timer entireRendering;
+        cudau::Timer training;
+        cudau::Timer rendering;
 
         void initialize() {
             frame.initialize(g_gpuEnv.cuContext);
             buildASs.initialize(g_gpuEnv.cuContext);
             computeLightProbs.initialize(g_gpuEnv.cuContext);
-            pathTracing.initialize(g_gpuEnv.cuContext);
+            entireRendering.initialize(g_gpuEnv.cuContext);
+            training.initialize(g_gpuEnv.cuContext);
+            rendering.initialize(g_gpuEnv.cuContext);
         }
 
         void finalize() {
@@ -634,6 +749,8 @@ static int32_t runGuiApp() {
     GPUTimer gpuTimers[2];
     for (GPUTimer &gpuTimer : gpuTimers)
         gpuTimer.initialize();
+
+    std::mt19937 perFrameRng(72139121);
 
     while (true) {
         cpuTimer.start();
@@ -670,6 +787,20 @@ static int32_t runGuiApp() {
                 staticPlpOnHost.imageSize = int2(renderTargetSizeX, renderTargetSizeY);
                 staticPlpOnHost.rngBuffer = rngBuffer.getSurfaceObject(0);
                 staticPlpOnHost.accumBuffer = accumBuffer.getSurfaceObject(0);
+
+                staticPlpOnHost.maxNumTrainingSuffixes = maxNumTrainingSuffixes;
+                staticPlpOnHost.inferenceRadianceQueryBuffer = inferenceRadianceQueryBuffer.getDevicePointer();
+                staticPlpOnHost.inferenceTerminalInfoBuffer = inferenceTerminalInfoBuffer.getDevicePointer();
+                staticPlpOnHost.trainSuffixTerminalInfoBuffer = trainSuffixTerminalInfoBuffer.getDevicePointer();
+                staticPlpOnHost.inferredRadianceBuffer = inferredRadianceBuffer.getDevicePointer();
+                staticPlpOnHost.perFrameContributionBuffer = perFrameContributionBuffer.getSurfaceObject(0);
+                for (int i = 0; i < 2; ++i) {
+                    staticPlpOnHost.trainRadianceQueryBuffer[i] = trainRadianceQueryBuffer[i].getDevicePointer();
+                    staticPlpOnHost.trainTargetBuffer[i] = trainTargetBuffer[i].getDevicePointer();
+                }
+                staticPlpOnHost.trainVertexInfoBuffer = trainVertexInfoBuffer.getDevicePointer();
+                staticPlpOnHost.shuffledTrainVertexInfoBuffer = shuffledTrainVertexInfoBuffer.getDevicePointer();
+                staticPlpOnHost.dataShufflerBuffer = dataShufflerBuffer.getDevicePointer();
             }
             CUDADRV_CHECK(cuMemcpyHtoD(staticPlpOnDevice, &staticPlpOnHost, sizeof(staticPlpOnHost)));
 
@@ -800,14 +931,18 @@ static int32_t runGuiApp() {
             static MovingAverageTime maCudaFrameTime;
             static MovingAverageTime maUpdateTime;
             static MovingAverageTime maComputeLightProbsTime;
-            static MovingAverageTime maPathTraceTime;
+            static MovingAverageTime maEntireRenderTime;
+            static MovingAverageTime maTrainTime;
+            static MovingAverageTime maRenderTime;
 
             maFrameTime.append(frameTime * 1e-3f);
             maSetUpDeviceDataTime.append(setUpDeviceDataTime * 1e-3f);
             maCudaFrameTime.append(curGpuTimer.frame.report());
             maUpdateTime.append(curGpuTimer.buildASs.report());
             maComputeLightProbsTime.append(curGpuTimer.computeLightProbs.report());
-            maPathTraceTime.append(curGpuTimer.pathTracing.report());
+            maEntireRenderTime.append(curGpuTimer.entireRendering.report());
+            maTrainTime.append(curGpuTimer.training.report());
+            maRenderTime.append(curGpuTimer.rendering.report());
 
             //ImGui::SetNextItemWidth(100.0f);
             ImGui::Text("Frame %.3f [ms]:", maFrameTime.getAverage());
@@ -815,7 +950,24 @@ static int32_t runGuiApp() {
             ImGui::Text("CUDA/OptiX GPU %.3f [ms]:", maCudaFrameTime.getAverage());
             ImGui::Text("  Update: %.3f [ms]", maUpdateTime.getAverage());
             ImGui::Text("  Compute Light Probs: %.3f [ms]", maComputeLightProbsTime.getAverage());
-            ImGui::Text("  Path Trace: %.3f [ms]", maPathTraceTime.getAverage());
+            ImGui::Text("  Render: %.3f [ms]", maEntireRenderTime.getAverage());
+            ImGui::Text("    Train: %.3f [ms]", maTrainTime.getAverage());
+            ImGui::Text("    Render: %.3f [ms]", maRenderTime.getAverage());
+
+            ImGui::End();
+        }
+
+
+
+        // Debug Window
+        static bool resetAccumulation = false;
+        static float log10RadianceScale = 0.0f;
+        {
+            ImGui::Begin("Debug", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+
+            ImGui::Text("Radiance Scale (Log10): %.2e", std::pow(10.0f, log10RadianceScale));
+            resetAccumulation |= ImGui::SliderFloat(
+                "##RadianceScale", &log10RadianceScale, -5, 5, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 
             ImGui::End();
         }
@@ -826,13 +978,14 @@ static int32_t runGuiApp() {
         //     firstAccumFrame: 純粋なサンプルサイズ増加の開始。
         bool newSequence =
             resized
-            || frameIndex == 0/* || resetAccumulation*/;
+            || frameIndex == 0
+            || resetAccumulation;
         bool firstAccumFrame =
             /*animate || !enableAccumulation ||  */
             envMapChanged
             || cameraIsActuallyMoving
-            || newSequence
-            || timeChanged;
+            || timeChanged
+            || newSequence;
         if (firstAccumFrame)
             numAccumFrames = 0;
         else
@@ -855,6 +1008,8 @@ static int32_t runGuiApp() {
         }
 
         perFramePlpOnHost.instances = g_scene.getInstancesOnDevice();
+
+        perFramePlpOnHost.radianceScale = std::pow(10.0f, log10RadianceScale);
 
         perFramePlpOnHost.enableEnvironmentalLight = enableEnvironmentalLight;
 
@@ -912,11 +1067,223 @@ static int32_t runGuiApp() {
         //    printf("");
         //}
 
-        curGpuTimer.pathTracing.start(curCuStream);
-        g_gpuEnv.pathTracing.setEntryPoint(PathTracingEntryPoint::pathTrace);
-        g_gpuEnv.pathTracing.optixPipeline.launch(
-            curCuStream, plpOnDevice, renderTargetSizeX, renderTargetSizeY, 1);
-        curGpuTimer.pathTracing.stop(curCuStream);
+        curGpuTimer.entireRendering.start(curCuStream);
+        if (true) {
+            curGpuTimer.training.start(curCuStream);
+
+            static uint32_t nrcBufIdx = -1;
+            nrcBufIdx = (nrcBufIdx + 1) % 2;
+            CUDADRV_CHECK(cuMemcpyHtoDAsync(
+                perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, nrcBufferIndex),
+                &nrcBufIdx, sizeof(nrcBufIdx), curCuStream));
+
+            g_gpuEnv.prepareNRC.launchWithThreadDim(
+                curCuStream, cudau::dim3(maxNumTrainingSuffixes),
+                perFrameRng(), newSequence);
+            //{
+            //    CUDADRV_CHECK(cuStreamSynchronize(0));
+            //    shared::StaticPipelineLaunchParameters s;
+            //    CUDADRV_CHECK(cuMemcpyDtoH(&s, staticPlpOnDevice, sizeof(s)));
+            //    shared::PerFramePipelineLaunchParameters f;
+            //    CUDADRV_CHECK(cuMemcpyDtoH(&f, perFramePlpOnDevice, sizeof(f)));
+            //    uint32_t numTrainingData[2];
+            //    int2 trainImageSizes[2];
+            //    shared::RGBSpectrumAsOrderedInt targetMinMaxs[2][2];
+            //    RGBSpectrum targetAvg[2];
+            //    for (int i = 0; i < 2; ++i) {
+            //        CUDADRV_CHECK(cuMemcpyDtoH(
+            //            &numTrainingData[i],
+            //            reinterpret_cast<CUdeviceptr>(s.numTrainingData[i]),
+            //            sizeof(numTrainingData[i])));
+            //        CUDADRV_CHECK(cuMemcpyDtoH(
+            //            &trainImageSizes[i],
+            //            reinterpret_cast<CUdeviceptr>(s.trainImageSize[i]),
+            //            sizeof(trainImageSizes[i])));
+            //        CUDADRV_CHECK(cuMemcpyDtoH(
+            //            &targetMinMaxs[i][0],
+            //            reinterpret_cast<CUdeviceptr>(s.targetMinMax[i][0]),
+            //            sizeof(targetMinMaxs[i][0])));
+            //        CUDADRV_CHECK(cuMemcpyDtoH(
+            //            &targetMinMaxs[i][1],
+            //            reinterpret_cast<CUdeviceptr>(s.targetMinMax[i][1]),
+            //            sizeof(targetMinMaxs[i][1])));
+            //        CUDADRV_CHECK(cuMemcpyDtoH(
+            //            &targetAvg[i],
+            //            reinterpret_cast<CUdeviceptr>(s.targetAvg[i]),
+            //            sizeof(targetAvg[i])));
+            //    }
+            //    printf("");
+            //}
+
+            CUDADRV_CHECK(cuStreamSynchronize(curCuStream));
+            int2 trainImageSize;
+            CUDADRV_CHECK(cuMemcpyDtoHAsync(
+                &trainImageSize,
+                reinterpret_cast<CUdeviceptr>(staticPlpOnHost.trainImageSize[nrcBufIdx]),
+                sizeof(trainImageSize), curCuStream));
+
+            g_gpuEnv.pathTracing.setEntryPoint(PathTracingEntryPoint::generateTrainingData);
+            g_gpuEnv.pathTracing.optixPipeline.launch(
+                curCuStream, plpOnDevice, trainImageSize.x, trainImageSize.y, 1);
+            //{
+            //    CUDADRV_CHECK(cuStreamSynchronize(0));
+            //    shared::StaticPipelineLaunchParameters s;
+            //    CUDADRV_CHECK(cuMemcpyDtoH(&s, staticPlpOnDevice, sizeof(s)));
+            //    shared::PerFramePipelineLaunchParameters f;
+            //    CUDADRV_CHECK(cuMemcpyDtoH(&f, perFramePlpOnDevice, sizeof(f)));
+            //    std::vector<shared::RadianceQuery> inferenceRadianceQueries =
+            //        inferenceRadianceQueryBuffer;
+            //    std::vector<shared::TrainingSuffixTerminalInfo> trainSuffixTerminalInfos =
+            //        trainSuffixTerminalInfoBuffer;
+            //    uint32_t numValidInferences = 0;
+            //    uint32_t numUnbiasedPath = 0;
+            //    for (int i = 0; i < trainImageSize.x * trainImageSize.y; ++i) {
+            //        const shared::TrainingSuffixTerminalInfo &terminalInfo =
+            //            trainSuffixTerminalInfos[i];
+            //        if (terminalInfo.hasQuery) {
+            //            const shared::RadianceQuery &query = inferenceRadianceQueries[i];
+            //            ++numValidInferences;
+            //        }
+            //        if (terminalInfo.isUnbiasedPath)
+            //            ++numUnbiasedPath;
+            //    }
+            //    std::vector<shared::RadianceQuery> trainRadianceQueries =
+            //        trainRadianceQueryBuffer[0];
+            //    std::vector<RGBSpectrum> trainTargets =
+            //        trainTargetBuffer[0];
+            //    std::vector<shared::TrainingVertexInfo> trainVertexInfos =
+            //        trainVertexInfoBuffer;
+            //    uint32_t numTrainingData;
+            //    CUDADRV_CHECK(cuMemcpyDtoH(
+            //        &numTrainingData,
+            //        reinterpret_cast<CUdeviceptr>(s.numTrainingData[nrcBufIdx]),
+            //        sizeof(numTrainingData)));
+            //    uint32_t maxPathLength = 0;
+            //    for (int i = 0; i < numTrainingData; ++i) {
+            //        const shared::TrainingVertexInfo &vertInfo = trainVertexInfos[i];
+            //        maxPathLength = std::max(vertInfo.pathLength, maxPathLength);
+            //    }
+            //    printf("");
+            //}
+
+            {
+                uint32_t numInferenceQueries =
+                    (trainImageSize.x * trainImageSize.y + 127) / 128 * 128;
+                g_gpuEnv.neuralRadianceCache.infer(
+                    curCuStream,
+                    reinterpret_cast<float*>(inferenceRadianceQueryBuffer.getDevicePointer()),
+                    numInferenceQueries,
+                    reinterpret_cast<float*>(inferredRadianceBuffer.getDevicePointer()));
+            }
+            //{
+            //    CUDADRV_CHECK(cuStreamSynchronize(0));
+            //    std::vector<RGBSpectrum> inferredRadianceValues = inferredRadianceBuffer;
+            //    printf("");
+            //}
+
+            g_gpuEnv.propagateRadianceValues.launchWithThreadDim(
+                curCuStream, cudau::dim3(trainImageSize.x * trainImageSize.y));
+            //{
+            //    CUDADRV_CHECK(cuStreamSynchronize(0));
+            //    std::vector<shared::TrainingSuffixTerminalInfo> trainSuffixTerminalInfos =
+            //        trainSuffixTerminalInfoBuffer;
+            //    std::vector<shared::RadianceQuery> trainRadianceQueries =
+            //        trainRadianceQueryBuffer[0];
+            //    std::vector<RGBSpectrum> trainTargets =
+            //        trainTargetBuffer[0];
+            //    printf("");
+            //}
+
+            g_gpuEnv.shuffleTrainingData.launchWithThreadDim(
+                curCuStream, cudau::dim3(shared::numTrainingDataPerFrame));
+            //{
+            //    CUDADRV_CHECK(cuStreamSynchronize(0));
+            //    shared::StaticPipelineLaunchParameters s;
+            //    CUDADRV_CHECK(cuMemcpyDtoH(&s, staticPlpOnDevice, sizeof(s)));
+            //    shared::PerFramePipelineLaunchParameters f;
+            //    CUDADRV_CHECK(cuMemcpyDtoH(&f, perFramePlpOnDevice, sizeof(f)));
+            //    shared::RGBSpectrumAsOrderedInt targetMinAsInt;
+            //    shared::RGBSpectrumAsOrderedInt targetMaxAsInt;
+            //    CUDADRV_CHECK(cuMemcpyDtoH(
+            //        &targetMinAsInt,
+            //        reinterpret_cast<CUdeviceptr>(s.targetMinMax[nrcBufIdx][0]),
+            //        sizeof(targetMinAsInt)));
+            //    CUDADRV_CHECK(cuMemcpyDtoH(
+            //        &targetMaxAsInt,
+            //        reinterpret_cast<CUdeviceptr>(s.targetMinMax[nrcBufIdx][1]),
+            //        sizeof(targetMaxAsInt)));
+            //    RGBSpectrum targetMin = static_cast<RGBSpectrum>(targetMinAsInt);
+            //    RGBSpectrum targetMax = static_cast<RGBSpectrum>(targetMaxAsInt);
+            //    RGBSpectrum targetAvg;
+            //    CUDADRV_CHECK(cuMemcpyDtoH(
+            //        &targetAvg,
+            //        reinterpret_cast<CUdeviceptr>(s.targetAvg[nrcBufIdx]),
+            //        sizeof(targetAvg)));
+            //    std::vector<shared::TrainingSuffixTerminalInfo> trainSuffixTerminalInfos =
+            //        trainSuffixTerminalInfoBuffer;
+            //    std::vector<shared::RadianceQuery> trainRadianceQueries =
+            //        trainRadianceQueryBuffer[1];
+            //    std::vector<RGBSpectrum> trainTargets =
+            //        trainTargetBuffer[1];
+            //    printf("");
+            //}
+
+            constexpr uint32_t batchSize = shared::numTrainingDataPerFrame / 4;
+            static_assert((batchSize & 0xFF) == 0, "Batch size has to be a multiple of 256.");
+            //const uint32_t targetBatchSize =
+            //    (std::min(numTrainingData, shared::numTrainingDataPerFrame) / 4 + 255) / 256 * 256;
+            uint32_t dataStartIndex = 0;
+            for (int step = 0; step < 4; ++step) {
+                //uint32_t batchSize = std::min(numTrainingData - dataStartIndex, targetBatchSize);
+                //batchSize = batchSize / 256 * 256;
+                g_gpuEnv.neuralRadianceCache.train(
+                    curCuStream,
+                    reinterpret_cast<float*>(trainRadianceQueryBuffer[1].getDevicePointerAt(dataStartIndex)),
+                    reinterpret_cast<float*>(trainTargetBuffer[1].getDevicePointerAt(dataStartIndex)),
+                    batchSize,
+                    /*(showLossValue && step == 3) ? &lossValue : */nullptr);
+                dataStartIndex += batchSize;
+            }
+
+            //{
+            //    CUDADRV_CHECK(cuStreamSynchronize(0));
+            //    printf("");
+            //}
+
+            curGpuTimer.training.stop(curCuStream);
+
+            // JP: 推論用バッファーを上の訓練データセットアップ時とオーバーラップして共有しているため待つ。
+            CUDADRV_CHECK(cuStreamSynchronize(curCuStream));
+
+            curGpuTimer.rendering.start(curCuStream);
+
+            g_gpuEnv.pathTracing.setEntryPoint(PathTracingEntryPoint::pathTraceWithNRC);
+            g_gpuEnv.pathTracing.optixPipeline.launch(
+                curCuStream, plpOnDevice, renderTargetSizeX, renderTargetSizeY, 1);
+
+            {
+                uint32_t numInferenceQueries =
+                    (renderTargetSizeX * renderTargetSizeY + 127) / 128 * 128;
+                g_gpuEnv.neuralRadianceCache.infer(
+                    curCuStream,
+                    reinterpret_cast<float*>(inferenceRadianceQueryBuffer.getDevicePointer()),
+                    numInferenceQueries,
+                    reinterpret_cast<float*>(inferredRadianceBuffer.getDevicePointer()));
+            }
+
+            g_gpuEnv.accumulateInferredRadianceValues.launchWithThreadDim(
+                curCuStream, cudau::dim3(renderTargetSizeX * renderTargetSizeY));
+
+            curGpuTimer.rendering.stop(curCuStream);
+        }
+        else {
+            curGpuTimer.rendering.start(curCuStream);
+            g_gpuEnv.pathTracing.setEntryPoint(PathTracingEntryPoint::pathTrace);
+            g_gpuEnv.pathTracing.optixPipeline.launch(
+                curCuStream, plpOnDevice, renderTargetSizeX, renderTargetSizeY, 1);
+            curGpuTimer.rendering.stop(curCuStream);
+        }
+        curGpuTimer.entireRendering.stop(curCuStream);
 
         g_gpuEnv.applyToneMap.launchWithThreadDim(
             curCuStream, cudau::dim3(renderTargetSizeX, renderTargetSizeY));
@@ -1016,6 +1383,8 @@ static int32_t runApp() {
     withGfx = false;
     initializeScreenRelatedBuffers(renderConfigs.imageWidth, renderConfigs.imageHeight);
 
+    setUpNrcBuffers();
+
     setUpPipelineLaunchParameters(renderConfigs.imageWidth, renderConfigs.imageHeight);
 
     perFramePlpOnHost.camera.aspect =
@@ -1048,6 +1417,8 @@ static int32_t runApp() {
     initImageSaverThread();
 
     constexpr bool printEnqueueSaveImageTime = false;
+
+    std::mt19937 perFrameRng(72139121);
 
     uint32_t timeStepIndex = 0;
     while (true) {
@@ -1083,14 +1454,97 @@ static int32_t runApp() {
         //g_scene.checkLightInstDistribution(
         //    perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, lightInstDist));
 
+        constexpr bool useNRC = true;
+        if (useNRC) {
+            uint32_t numTrainItrs = timeStepIndex == 0 ? 4 : 1;
+            for (int trainLoop = 0; trainLoop < numTrainItrs; ++trainLoop) {
+                static uint32_t nrcBufIdx = -1;
+                nrcBufIdx = (nrcBufIdx + 1) % 2;
+                CUDADRV_CHECK(cuMemcpyHtoDAsync(
+                    perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, nrcBufferIndex),
+                    &nrcBufIdx, sizeof(nrcBufIdx), cuStream));
+
+                g_gpuEnv.prepareNRC.launchWithThreadDim(
+                    cuStream, cudau::dim3(maxNumTrainingSuffixes),
+                    perFrameRng(), timeStepIndex == 0);
+
+                CUDADRV_CHECK(cuStreamSynchronize(cuStream));
+                int2 trainImageSize;
+                CUDADRV_CHECK(cuMemcpyDtoHAsync(
+                    &trainImageSize,
+                    reinterpret_cast<CUdeviceptr>(staticPlpOnHost.trainImageSize[nrcBufIdx]),
+                    sizeof(trainImageSize), cuStream));
+
+                g_gpuEnv.pathTracing.setEntryPoint(PathTracingEntryPoint::generateTrainingData);
+                g_gpuEnv.pathTracing.optixPipeline.launch(
+                    cuStream, plpOnDevice, trainImageSize.x, trainImageSize.y, 1);
+
+                {
+                    uint32_t numInferenceQueries =
+                        (trainImageSize.x * trainImageSize.y + 127) / 128 * 128;
+                    g_gpuEnv.neuralRadianceCache.infer(
+                        cuStream,
+                        reinterpret_cast<float*>(inferenceRadianceQueryBuffer.getDevicePointer()),
+                        numInferenceQueries,
+                        reinterpret_cast<float*>(inferredRadianceBuffer.getDevicePointer()));
+                }
+
+                g_gpuEnv.propagateRadianceValues.launchWithThreadDim(
+                    cuStream, cudau::dim3(trainImageSize.x * trainImageSize.y));
+
+                g_gpuEnv.shuffleTrainingData.launchWithThreadDim(
+                    cuStream, cudau::dim3(shared::numTrainingDataPerFrame));
+
+                constexpr uint32_t batchSize = shared::numTrainingDataPerFrame / 4;
+                static_assert((batchSize & 0xFF) == 0, "Batch size has to be a multiple of 256.");
+                //const uint32_t targetBatchSize =
+                //    (std::min(numTrainingData, shared::numTrainingDataPerFrame) / 4 + 255) / 256 * 256;
+                uint32_t dataStartIndex = 0;
+                for (int step = 0; step < 4; ++step) {
+                    //uint32_t batchSize = std::min(numTrainingData - dataStartIndex, targetBatchSize);
+                    //batchSize = batchSize / 256 * 256;
+                    g_gpuEnv.neuralRadianceCache.train(
+                        cuStream,
+                        reinterpret_cast<float*>(trainRadianceQueryBuffer[1].getDevicePointerAt(dataStartIndex)),
+                        reinterpret_cast<float*>(trainTargetBuffer[1].getDevicePointerAt(dataStartIndex)),
+                        batchSize,
+                        /*(showLossValue && step == 3) ? &lossValue : */nullptr);
+                    dataStartIndex += batchSize;
+                }
+
+                // JP: 推論用バッファーを上の訓練データセットアップ時とオーバーラップして共有しているため待つ。
+                CUDADRV_CHECK(cuStreamSynchronize(cuStream));
+            }
+        }
+
         uint32_t numSamplesPerFrame = 8;
         for (int i = 0; i < numSamplesPerFrame; ++i) {
             CUDADRV_CHECK(cuMemcpyHtoDAsync(
                 perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, numAccumFrames),
                 &i, sizeof(i), cuStream));
-            g_gpuEnv.pathTracing.setEntryPoint(PathTracingEntryPoint::pathTrace);
-            g_gpuEnv.pathTracing.optixPipeline.launch(
-                cuStream, plpOnDevice, renderConfigs.imageWidth, renderConfigs.imageHeight, 1);
+            if (useNRC) {
+                g_gpuEnv.pathTracing.setEntryPoint(PathTracingEntryPoint::pathTraceWithNRC);
+                g_gpuEnv.pathTracing.optixPipeline.launch(
+                    cuStream, plpOnDevice, renderConfigs.imageWidth, renderConfigs.imageHeight, 1);
+
+                {
+                    uint32_t numInferenceQueries =
+                        (renderConfigs.imageWidth * renderConfigs.imageHeight + 127) / 128 * 128;
+                    g_gpuEnv.neuralRadianceCache.infer(
+                        cuStream,
+                        reinterpret_cast<float*>(inferenceRadianceQueryBuffer.getDevicePointer()),
+                        numInferenceQueries,
+                        reinterpret_cast<float*>(inferredRadianceBuffer.getDevicePointer()));
+                }
+
+                g_gpuEnv.accumulateInferredRadianceValues.launchWithThreadDim(
+                    cuStream, cudau::dim3(renderConfigs.imageWidth * renderConfigs.imageHeight));
+            }
+            else {
+                g_gpuEnv.pathTracing.setEntryPoint(PathTracingEntryPoint::pathTrace);
+                g_gpuEnv.pathTracing.optixPipeline.launch(
+                    cuStream, plpOnDevice, renderConfigs.imageWidth, renderConfigs.imageHeight, 1);
+            }
         }
 
         g_gpuEnv.applyToneMap.launchWithThreadDim(

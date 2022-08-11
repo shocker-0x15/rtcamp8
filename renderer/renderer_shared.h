@@ -8,6 +8,10 @@
 namespace rtc8::shared {
 
 static constexpr float probToSampleEnvLight = 0.25f;
+static constexpr float pathTerminationFactor = 0.01f;
+static constexpr uint32_t numTrainingDataPerFrame = 1 << 16;
+static constexpr uint32_t trainBufferSize = 2 * numTrainingDataPerFrame;
+static constexpr bool debugTrainingDataShuffle = false;
 
 
 
@@ -38,6 +42,74 @@ struct LightSample {
 
 
 
+
+struct RadianceQuery {
+    Point3D position;
+    float normal_phi;
+    float normal_theta;
+    float vOut_phi;
+    float vOut_theta;
+    float roughness;
+    RGBSpectrum diffuseReflectance;
+    RGBSpectrum specularReflectance;
+
+    CUDA_DEVICE_FUNCTION bool isValid() const {
+        return
+            position.allFinite() &&
+            isfinite(normal_phi) && isfinite(normal_theta) &&
+            isfinite(vOut_phi) && isfinite(vOut_theta) &&
+            isfinite(roughness) &&
+            diffuseReflectance.allFinite() &&
+            specularReflectance.allFinite();
+    }
+};
+
+struct TerminalInfo {
+    RGBSpectrum throughput;
+    uint32_t hasQuery : 1;
+    // for stats/debug
+    uint32_t pathLength : 8;
+};
+
+static constexpr uint32_t invalidVertexDataIndex = 0x003FFFFF;
+
+struct TrainingVertexInfo {
+    RGBSpectrum localThroughput;
+    uint32_t prevVertexDataIndex : 22;
+    // for stats/debug
+    uint32_t pathLength : 8;
+    uint32_t isUnbiasedPath : 1;
+};
+
+struct TrainingSuffixTerminalInfo {
+    uint32_t prevVertexDataIndex : 22;
+    uint32_t hasQuery : 1;
+    // for stats/debug
+    uint32_t pathLength : 8;
+    uint32_t isUnbiasedPath : 1;
+};
+
+class LinearCongruentialGenerator {
+    static constexpr uint32_t a = 1103515245;
+    static constexpr uint32_t c = 12345;
+    static constexpr uint32_t m = 1u << 31;
+    uint32_t m_state;
+
+public:
+    LinearCongruentialGenerator() : m_state(0) {}
+
+    CUDA_COMMON_FUNCTION void setState(uint32_t seed) {
+        m_state = seed;
+    }
+
+    CUDA_COMMON_FUNCTION uint32_t next() {
+        m_state = ((m_state * a) + c) % m;
+        return m_state;
+    }
+};
+
+
+
 struct StaticPipelineLaunchParameters {
     BSDFProcedureSet* bsdfProcedureSets;
     SurfaceMaterial* surfaceMaterials;
@@ -52,6 +124,22 @@ struct StaticPipelineLaunchParameters {
     nanovdb::BBox<nanovdb::Vec3f> densityGridBBox;
     float densityCoeff;
     float majorant;
+
+    uint32_t maxNumTrainingSuffixes;
+    uint32_t* numTrainingData[2];
+    int2* trainImageSize[2];
+    RGBSpectrumAsOrderedInt* targetMinMax[2][2];
+    RGBSpectrum* targetAvg[2];
+    RadianceQuery* inferenceRadianceQueryBuffer; // image size or #(training suffix)
+    TerminalInfo* inferenceTerminalInfoBuffer; // image size
+    TrainingSuffixTerminalInfo* trainSuffixTerminalInfoBuffer; // #(training suffix)
+    RGBSpectrum* inferredRadianceBuffer; // image size or #(training suffix)
+    optixu::NativeBlockBuffer2D<RGBSpectrum> perFrameContributionBuffer; // image size
+    RadianceQuery* trainRadianceQueryBuffer[2]; // #(training vertex)
+    RGBSpectrum* trainTargetBuffer[2]; // #(training vertex)
+    TrainingVertexInfo* trainVertexInfoBuffer; // #(training vertex)
+    TrainingVertexInfo* shuffledTrainVertexInfoBuffer; // #(training vertex), only for debug
+    LinearCongruentialGenerator* dataShufflerBuffer; // numTrainingDataPerFrame
 };
 
 struct PerFramePipelineLaunchParameters {
@@ -65,6 +153,10 @@ struct PerFramePipelineLaunchParameters {
 
     int2 mousePosition;
 
+    uint32_t offsetToSelectUnbiasedPath;
+    uint32_t nrcBufferIndex;
+    float radianceScale;
+
     OptixTraversableHandle travHandle;
     PerspectiveCamera camera;
     uint32_t numAccumFrames;
@@ -73,8 +165,8 @@ struct PerFramePipelineLaunchParameters {
 };
 
 struct PipelineLaunchParameters {
-    const StaticPipelineLaunchParameters* s;
-    const PerFramePipelineLaunchParameters* f;
+    StaticPipelineLaunchParameters* s;
+    PerFramePipelineLaunchParameters* f;
 };
 
 

@@ -153,6 +153,9 @@ CUDA_COMMON_FUNCTION CUDA_INLINE int2 &operator*=(int2 &v, uint32_t s) {
 CUDA_COMMON_FUNCTION CUDA_INLINE int2 operator/(const int2 &v0, const int2 &v1) {
     return make_int2(v0.x / v1.x, v0.y / v1.y);
 }
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 operator/(const int2 &v, uint32_t s) {
+    return make_int2(v.x / s, v.y / s);
+}
 CUDA_COMMON_FUNCTION CUDA_INLINE uint2 operator/(const int2 &v0, const uint2 &v1) {
     return make_uint2(v0.x / v1.x, v0.y / v1.y);
 }
@@ -1895,6 +1898,16 @@ CUDA_COMMON_FUNCTION CUDA_INLINE /*constexpr*/ Vector3DTemplate<RealType> halfVe
     return normalize(va + vb);
 }
 
+template <typename RealType>
+CUDA_DEVICE_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType> safeDivide(
+    const Vector3DTemplate<RealType> &a, const Vector3DTemplate<RealType> &b) {
+    RealType zero = static_cast<RealType>(0);
+    return Vector3DTemplate<RealType>(
+        b.x != 0 ? a.x / b.x : zero,
+        b.y != 0 ? a.y / b.y : zero,
+        b.z != 0 ? a.z / b.z : zero);
+}
+
 // END: Vector3D/Normal3D operators and functions
 // ----------------------------------------------------------------
 
@@ -2794,7 +2807,7 @@ struct BoundingBox3DTemplate {
 
     CUDA_COMMON_FUNCTION constexpr PointType calcLocalCoordinates(
         const PointType &p) const {
-        return static_cast<PointType>((p - minP) / (maxP - minP));
+        return static_cast<PointType>(safeDivide(p - minP, maxP - minP));
     }
 
     CUDA_COMMON_FUNCTION /*constexpr*/ bool hasNaN() const {
@@ -3044,6 +3057,16 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> max(
     const RGBTemplate<RealType> &va, const RGBTemplate<RealType> &vb) {
     using rtc8::max;
     return RGBTemplate<RealType>(max(va.r, vb.r), max(va.g, vb.g), max(va.b, vb.b));
+}
+
+template <typename RealType>
+CUDA_DEVICE_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> safeDivide(
+    const RGBTemplate<RealType> &a, const RGBTemplate<RealType> &b) {
+    RealType zero = static_cast<RealType>(0);
+    return RGBTemplate<RealType>(
+        b.r != 0 ? a.r / b.r : zero,
+        b.g != 0 ? a.g / b.g : zero,
+        b.b != 0 ? a.b / b.b : zero);
 }
 
 template <typename RealType>

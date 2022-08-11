@@ -125,13 +125,6 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void computeSurfacePoint(
 
 
 
-CUDA_DEVICE_KERNEL void RT_AH_NAME(visibility)() {
-    float visibility = 0.0f;
-    VisibilityRaySignature::set(&visibility);
-}
-
-
-
 template <bool useSolidAngleSampling>
 CUDA_DEVICE_FUNCTION CUDA_INLINE void sampleLight(
     const Point3D &shadingPoint,

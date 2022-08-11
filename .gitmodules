@@ -22,3 +22,6 @@
 [submodule "ext/fpng"]
 	path = ext/fpng
 	url = https://github.com/richgel999/fpng.git
+[submodule "ext/tiny-cuda-nn"]
+	path = ext/tiny-cuda-nn
+	url = https://github.com/NVlabs/tiny-cuda-nn.git

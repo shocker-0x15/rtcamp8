@@ -1221,6 +1221,48 @@ struct BoundingBox3DAsOrderedInt {
     }
 };
 
+struct RGBSpectrumAsOrderedInt {
+    int32_t r, g, b;
+
+    CUDA_COMMON_FUNCTION RGBSpectrumAsOrderedInt() : r(0), g(0), b(0) {
+    }
+    CUDA_COMMON_FUNCTION RGBSpectrumAsOrderedInt(const RGBSpectrum &v) :
+        r(floatToOrderedInt(v.r)), g(floatToOrderedInt(v.g)), b(floatToOrderedInt(v.b)) {
+    }
+
+    CUDA_COMMON_FUNCTION RGBSpectrumAsOrderedInt& operator=(const RGBSpectrumAsOrderedInt &v) {
+        r = v.r;
+        g = v.g;
+        b = v.b;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION RGBSpectrumAsOrderedInt& operator=(const volatile RGBSpectrumAsOrderedInt &v) {
+        r = v.r;
+        g = v.g;
+        b = v.b;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION volatile RGBSpectrumAsOrderedInt& operator=(const RGBSpectrumAsOrderedInt &v) volatile {
+        r = v.r;
+        g = v.g;
+        b = v.b;
+        return *this;
+    }
+    CUDA_COMMON_FUNCTION volatile RGBSpectrumAsOrderedInt& operator=(const volatile RGBSpectrumAsOrderedInt &v) volatile {
+        r = v.r;
+        g = v.g;
+        b = v.b;
+        return *this;
+    }
+
+    CUDA_COMMON_FUNCTION explicit operator RGBSpectrum() const {
+        return RGBSpectrum(orderedIntToFloat(r), orderedIntToFloat(g), orderedIntToFloat(b));
+    }
+    CUDA_COMMON_FUNCTION explicit operator RGBSpectrum() const volatile {
+        return RGBSpectrum(orderedIntToFloat(r), orderedIntToFloat(g), orderedIntToFloat(b));
+    }
+};
+
 } // namespace rtc8::shared
 
 
@@ -2296,6 +2338,48 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void atomicMinMax(
     atomicMax(&dstAabb->maxP.x, aabb.maxP.x);
     atomicMax(&dstAabb->maxP.y, aabb.maxP.y);
     atomicMax(&dstAabb->maxP.z, aabb.maxP.z);
+}
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE void atomicMin_RGBSpectrum_block(
+    shared::RGBSpectrumAsOrderedInt* dstValue, const shared::RGBSpectrumAsOrderedInt &value) {
+    atomicMin_block(&dstValue->r, value.r);
+    atomicMin_block(&dstValue->g, value.g);
+    atomicMin_block(&dstValue->b, value.b);
+}
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE void atomicMax_RGBSpectrum_block(
+    shared::RGBSpectrumAsOrderedInt* dstValue, const shared::RGBSpectrumAsOrderedInt &value) {
+    atomicMax_block(&dstValue->r, value.r);
+    atomicMax_block(&dstValue->g, value.g);
+    atomicMax_block(&dstValue->b, value.b);
+}
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE void atomicAdd_RGBSpectrum_block(
+    RGBSpectrum* dstValue, const RGBSpectrum &value) {
+    atomicAdd_block(&dstValue->r, value.r);
+    atomicAdd_block(&dstValue->g, value.g);
+    atomicAdd_block(&dstValue->b, value.b);
+}
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE void atomicMin_RGBSpectrum(
+    shared::RGBSpectrumAsOrderedInt* dstValue, const shared::RGBSpectrumAsOrderedInt &value) {
+    atomicMin(&dstValue->r, value.r);
+    atomicMin(&dstValue->g, value.g);
+    atomicMin(&dstValue->b, value.b);
+}
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE void atomicMax_RGBSpectrum(
+    shared::RGBSpectrumAsOrderedInt* dstValue, const shared::RGBSpectrumAsOrderedInt &value) {
+    atomicMax(&dstValue->r, value.r);
+    atomicMax(&dstValue->g, value.g);
+    atomicMax(&dstValue->b, value.b);
+}
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE void atomicAdd_RGBSpectrum(
+    RGBSpectrum* dstValue, const RGBSpectrum &value) {
+    atomicAdd(&dstValue->r, value.r);
+    atomicAdd(&dstValue->g, value.g);
+    atomicAdd(&dstValue->b, value.b);
 }
 
 } // namespace rtc8::device

@@ -9,11 +9,17 @@ set(
     "gpu_kernels/post_process_kernels.cu"
     "gpu_kernels/compute_light_probs.cu"
     "gpu_kernels/analytic_sky_kernels.cu"
+    "gpu_kernels/nrc_set_up_kernels.cu"
 )
 
 set(
     OPTIX_KERNELS
     "gpu_kernels/optix_pathtracing_kernels.cu"
+)
+
+set(
+    CUDA_SOURCES
+    "network_interface.cu"
 )
 
 set(
@@ -73,6 +79,9 @@ source_group(
     "essentials" REGULAR_EXPRESSION
     "${CMAKE_CURRENT_SOURCE_DIR}/[^/]*\.(h|hpp|c|cpp)$")
 source_group(
+    "essentials" FILES
+    ${CUDA_SOURCES})
+source_group(
     "essentials/GPU kernels" REGULAR_EXPRESSION
     "${CMAKE_CURRENT_SOURCE_DIR}/gpu_kernels/[^/]*\.(h|cu)$")
 
@@ -83,11 +92,18 @@ add_executable(
     ${GL3W_SOURCES}
     ${CUDA_KERNELS}
     ${OPTIX_KERNELS}
+    ${CUDA_SOURCES}
 )
 target_compile_features("${TARGET_NAME}" PRIVATE cxx_std_20)
 set_target_properties("${TARGET_NAME}" PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(
+    "${TARGET_NAME}" PRIVATE
+    "../ext/tiny-cuda-nn/dependencies"
+    "../ext/tiny-cuda-nn/include"
+)
 target_link_libraries(
     "${TARGET_NAME}"
     fakelib
+    tiny-cuda-nn
 )
     

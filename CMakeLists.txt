@@ -275,10 +275,10 @@ add_subdirectory(ext/assimp)
 set_project_group("External" "ext/assimp")
 
 # Tiny CUDA Neural Networks
-# option(TCNN_BUILD_BENCHMARK "Build tiny-cuda-nn example benchmark?" OFF)
-# option(TCNN_BUILD_EXAMPLES "Build tiny-cuda-nn example applications?" OFF)
-# add_subdirectory(ext/tiny-cuda-nn)
-# set_project_group("External" "ext/tiny-cuda-nn")
+option(TCNN_BUILD_BENCHMARK "Build tiny-cuda-nn example benchmark?" OFF)
+option(TCNN_BUILD_EXAMPLES "Build tiny-cuda-nn example applications?" OFF)
+add_subdirectory(ext/tiny-cuda-nn)
+set_project_group("External" "ext/tiny-cuda-nn")
 
 # CUBd
 option(CUBD_BUILD_SAMPLES "Build sample projects for cubd." OFF)

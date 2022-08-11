@@ -2,6 +2,7 @@
 
 #include "renderer_shared.h"
 #include "../common/common_host.h"
+#include "network_interface.h"
 #include "../ext/cubd/cubd.h"
 
 #include <nanovdb/util/IO.h>
@@ -22,11 +23,22 @@ using TypedBufferRef = std::shared_ptr<cudau::TypedBuffer<T>>;
 
 enum class PathTracingEntryPoint {
     pathTrace,
+    generateTrainingData,
+    pathTraceWithNRC,
 };
 
 struct GPUEnvironment {
     CUcontext cuContext;
     optixu::Context optixContext;
+
+    CUmodule nrcSetUpKernelsModule;
+    CUdeviceptr plpForNrcSetUpKernelsModule;
+    cudau::Kernel prepareNRC;
+    cudau::Kernel propagateRadianceValues;
+    cudau::Kernel shuffleTrainingData;
+    cudau::Kernel accumulateInferredRadianceValues;
+
+    NeuralRadianceCache neuralRadianceCache;
 
     CUmodule postProcessKernelsModule;
     CUdeviceptr plpForPostProcessKernelsModule;
