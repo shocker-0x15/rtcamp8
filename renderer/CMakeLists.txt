@@ -25,6 +25,7 @@ set(
     "../common/common_renderer_types.h"
     "../common/basic_types.h"
     "${TARGET_NAME}_shared.h"
+    "gpu_kernels/renderer_kernel_common.h"
 )
 
 nvcuda_compile_ptx(
@@ -73,7 +74,7 @@ source_group(
     "${CMAKE_CURRENT_SOURCE_DIR}/[^/]*\.(h|hpp|c|cpp)$")
 source_group(
     "essentials/GPU kernels" REGULAR_EXPRESSION
-    "${CMAKE_CURRENT_SOURCE_DIR}/gpu_kernels/[^/]*\.(cu)$")
+    "${CMAKE_CURRENT_SOURCE_DIR}/gpu_kernels/[^/]*\.(h|cu)$")
 
 add_executable(
     "${TARGET_NAME}"
