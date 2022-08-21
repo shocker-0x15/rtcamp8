@@ -1275,6 +1275,8 @@ static constexpr float RayEpsilon = 1e-4;
 
 CUDA_DEVICE_FUNCTION const shared::BSDFProcedureSet &getBSDFProcedureSet(uint32_t slot);
 
+CUDA_DEVICE_FUNCTION CUDA_INLINE const float &getScatteringForwardness();
+
 
 
 CUDA_DEVICE_FUNCTION CUDA_INLINE void concentricSampleDisk(float u0, float u1, float* dx, float* dy) {
@@ -2072,6 +2074,44 @@ public:
 
 
 
+class SchlickPhaseFunction {
+    float m_k;
+
+public:
+    CUDA_DEVICE_FUNCTION SchlickPhaseFunction(float k) : m_k(k) {}
+
+    CUDA_DEVICE_FUNCTION RGBSpectrum sampleF(
+        const shared::BSDFQuery &query, const shared::BSDFSample &sample,
+        shared::BSDFQueryResult* result) const {
+        float cosTheta = clamp(
+            (2 * sample.uDir[1] + m_k - 1) / (2 * m_k * sample.uDir[1] - m_k + 1),
+            -1.0f, 1.0f);
+        float phi = 2 * pi_v<float> * sample.uDir[0];
+
+        float dTerm = (1 - m_k * cosTheta);
+        float value = (1 - pow2(m_k)) / (4 * pi_v<float> * pow2(dTerm));
+        float sinTheta = std::sqrt(1 - pow2(cosTheta));
+        result->dirLocal = Vector3D(std::cos(phi) * sinTheta, std::sin(phi) * sinTheta, -cosTheta);
+        result->dirPDensity = value;
+
+        return RGBSpectrum(value);
+    }
+    CUDA_DEVICE_FUNCTION RGBSpectrum evaluateF(const shared::BSDFQuery &query, const Vector3D &vSampled) const {
+        float cosTheta = -vSampled.z;
+        float dTerm = (1 - m_k * cosTheta);
+        float value = (1 - pow2(m_k)) / (4 * pi_v<float> * pow2(dTerm));
+        return RGBSpectrum(value);
+    }
+    CUDA_DEVICE_FUNCTION float evaluatePDF(const shared::BSDFQuery &query, const Vector3D &vSampled) const {
+        float cosTheta = -vSampled.z;
+        float dTerm = (1 - m_k * cosTheta);
+        float ret = (1 - pow2(m_k)) / (4 * pi_v<float> * pow2(dTerm));
+        return ret;
+    }
+};
+
+
+
 template <bool isGeneric>
 class BSDFTemplate;
 
@@ -2080,7 +2120,7 @@ class BSDFTemplate<false> {
     union {
         HARD_CODED_BSDF m_bsdf;
         struct {
-            IsotropicPhaseFunction m_pf;
+            SchlickPhaseFunction m_pf;
             RGBSpectrum m_scatteringAlbedo;
         };
     };
@@ -2099,6 +2139,7 @@ public:
         const RGBSpectrum &scatteringAlbedo,
         shared::BSDFBuildFlags flags = shared::BSDFBuildFlags::None) {
         m_scatteringAlbedo = scatteringAlbedo;
+        m_pf = SchlickPhaseFunction(getScatteringForwardness());
         m_inMedium = true;
     }
     CUDA_DEVICE_FUNCTION bool isInMedium() const {
@@ -2164,7 +2205,7 @@ class BSDFTemplate<true> {
             uint32_t data[NumDwords];
         } m_s;
         struct {
-            IsotropicPhaseFunction pf;
+            SchlickPhaseFunction pf;
             RGBSpectrum scatteringAlbedo;
         } m_m;
     };
@@ -2189,6 +2230,7 @@ public:
         const RGBSpectrum scatteringAlbedo,
         shared::BSDFBuildFlags flags = shared::BSDFBuildFlags::None) {
         m_m.scatteringAlbedo = scatteringAlbedo;
+        m_m.pf = SchlickPhaseFunction(getScatteringForwardness());
         m_inMedium = true;
     }
     CUDA_DEVICE_FUNCTION bool isInMedium() const {

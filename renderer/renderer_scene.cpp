@@ -489,7 +489,7 @@ void Scene::checkLightInstDistribution(CUdeviceptr lightInstDistAddr) {
 }
 
 void Scene::allocateVolumeGrid(
-    nanovdb::GridHandle<nanovdb::CudaDeviceBuffer> &gridHandle, float densityCoeff) {
+    nanovdb::GridHandle<nanovdb::CudaDeviceBuffer> &gridHandle) {
     m_gridHandle = std::move(gridHandle);
     auto gridOnHost = m_gridHandle.grid<float>();
     nanovdb::BBoxR bbox = gridOnHost->worldBBox();
@@ -517,7 +517,6 @@ void Scene::allocateVolumeGrid(
     m_densityGridBBox = nanovdb::BBox<nanovdb::Vec3f>(
         nanovdb::Vec3f(bbox.min()[0], bbox.min()[1], bbox.min()[2]),
         nanovdb::Vec3f(bbox.max()[0], bbox.max()[1], bbox.max()[2]));
-    m_densityCoeff = densityCoeff;
 
     m_gridHandle.deviceUpload();
     m_densityGrid = m_gridHandle.deviceGrid<float>();
@@ -539,11 +538,10 @@ void Scene::allocateVolumeGrid(
 
 void Scene::setVolumeGrid(
     nanovdb::FloatGrid** densityGrid, nanovdb::BBox<nanovdb::Vec3f>* gridBBox,
-    float* densityCoeff, float* majorant) {
+    float* majorant) {
     *densityGrid = m_densityGrid;
     *gridBBox = m_densityGridBBox;
-    *densityCoeff = m_densityCoeff;
-    *majorant = m_majorant * m_densityCoeff;
+    *majorant = m_majorant;
 }
 
 
@@ -2350,7 +2348,7 @@ void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* render
         std::filesystem::path volPath =
             R"(C:\Users\shocker_0x15\repos\instant-ngp\data\volume\wdas_cloud_quarter.nvdb)";
         auto gridHandle = nanovdb::io::readGrid<nanovdb::CudaDeviceBuffer>(volPath.string());
-        g_scene.allocateVolumeGrid(gridHandle, 0.3f);
+        g_scene.allocateVolumeGrid(gridHandle);
     }
 }
 

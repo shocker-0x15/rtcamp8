@@ -97,8 +97,8 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void pathTrace_generic() {
         bool volEventHappens = false;
         if (plp.s->densityGrid) {
             const nvdb::FloatGrid* densityGrid = plp.s->densityGrid;
-            const float densityCoeff = plp.s->densityCoeff;
-            const float majorant = plp.s->majorant;
+            const float densityCoeff = plp.f->densityCoeff;
+            const float majorant = densityCoeff * plp.s->majorant;
             const nvdb::DefaultReadAccessor<float> &acc = densityGrid->getAccessor();
             const auto sampler = nvdb::createSampler<1, nvdb::DefaultReadAccessor<float>, false>(acc);
             auto map = densityGrid->map();
@@ -267,11 +267,10 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE void pathTrace_generic() {
                 break;
         }
 
-        constexpr float scatteringAlbedo = 0.99f;
         BSDF bsdf;
         BSDFQuery bsdfQuery;
         if (volEventHappens) {
-            bsdf.setup(scatteringAlbedo);
+            bsdf.setup(plp.f->scatteringAlbedo);
             bsdfQuery = BSDFQuery();
         }
         else {

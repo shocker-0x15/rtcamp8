@@ -248,19 +248,6 @@ CUDA_COMMON_FUNCTION CUDA_INLINE uint2 &operator>>=(uint2 &v, uint32_t s) {
     return v;
 }
 
-CUDA_COMMON_FUNCTION CUDA_INLINE uint2 min(const uint2 &v0, const uint2 &v1) {
-#if !defined(__CUDA_ARCH__)
-    using std::min;
-#endif
-    return make_uint2(min(v0.x, v1.x), min(v0.y, v1.y));
-}
-CUDA_COMMON_FUNCTION CUDA_INLINE uint2 max(const uint2 &v0, const uint2 &v1) {
-#if !defined(__CUDA_ARCH__)
-    using std::max;
-#endif
-    return make_uint2(max(v0.x, v1.x), max(v0.y, v1.y));
-}
-
 CUDA_COMMON_FUNCTION CUDA_INLINE float2 make_float2(float v) {
     return make_float2(v, v);
 }
@@ -477,6 +464,24 @@ CUDA_COMMON_FUNCTION CUDA_INLINE bool allFinite(const float4 &v) {
     using std::isfinite;
 #endif
     return isfinite(v.x) && isfinite(v.y) && isfinite(v.z) && isfinite(v.w);
+}
+
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 min(const int2 &v0, const int2 &v1) {
+    return make_int2(rtc8::min(v0.x, v1.x),
+                     rtc8::min(v0.y, v1.y));
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE int2 max(const int2 &v0, const int2 &v1) {
+    return make_int2(rtc8::max(v0.x, v1.x),
+                     rtc8::max(v0.y, v1.y));
+}
+
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 min(const uint2 &v0, const uint2 &v1) {
+    return make_uint2(rtc8::min(v0.x, v1.x),
+                      rtc8::min(v0.y, v1.y));
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE uint2 max(const uint2 &v0, const uint2 &v1) {
+    return make_uint2(rtc8::max(v0.x, v1.x),
+                      rtc8::max(v0.y, v1.y));
 }
 
 CUDA_COMMON_FUNCTION CUDA_INLINE float3 min(const float3 &v0, const float3 &v1) {
@@ -1755,21 +1760,24 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> operator/(
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> min(
     const Point3DTemplate<RealType> &va, const Point3DTemplate<RealType> &vb) {
-    using rtc8::min;
-    return Point3DTemplate<RealType>(min(va.x, vb.x), min(va.y, vb.y), min(va.z, vb.z));
+    return Point3DTemplate<RealType>(
+        std::fmin(va.x, vb.x),
+        std::fmin(va.y, vb.y),
+        std::fmin(va.z, vb.z));
 }
 
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Point3DTemplate<RealType> max(
     const Point3DTemplate<RealType> &va, const Point3DTemplate<RealType> &vb) {
-    using rtc8::max;
-    return Point3DTemplate<RealType>(max(va.x, vb.x), max(va.y, vb.y), max(va.z, vb.z));
+    return Point3DTemplate<RealType>(
+        std::fmax(va.x, vb.x),
+        std::fmax(va.y, vb.y),
+        std::fmax(va.z, vb.z));
 }
 
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RealType squaredDistance(
     const Point3DTemplate<RealType> &va, const Point3DTemplate<RealType> &vb) {
-    using rtc8::min;
     Vector3DTemplate<RealType> vector = vb - va;
     return vector.squaredLength();
 }
@@ -1881,15 +1889,19 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, aIsNormal>
 template <typename RealType, bool isNormal>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, isNormal> min(
     const Vector3DTemplate<RealType, isNormal> &va, const Vector3DTemplate<RealType, isNormal> &vb) {
-    using rtc8::min;
-    return Vector3DTemplate<RealType, isNormal>(min(va.x, vb.x), min(va.y, vb.y), min(va.z, vb.z));
+    return Vector3DTemplate<RealType, isNormal>(
+        std::fmin(va.x, vb.x),
+        std::fmin(va.y, vb.y),
+        std::fmin(va.z, vb.z));
 }
 
 template <typename RealType, bool isNormal>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector3DTemplate<RealType, isNormal> max(
     const Vector3DTemplate<RealType, isNormal> &va, const Vector3DTemplate<RealType, isNormal> &vb) {
-    using rtc8::max;
-    return Vector3DTemplate<RealType, isNormal>(max(va.x, vb.x), max(va.y, vb.y), max(va.z, vb.z));
+    return Vector3DTemplate<RealType, isNormal>(
+        std::fmax(va.x, vb.x),
+        std::fmax(va.y, vb.y),
+        std::fmax(va.z, vb.z));
 }
 
 template <typename RealType>
@@ -1977,15 +1989,21 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RealType dot(
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector4DTemplate<RealType> min(
     const Vector4DTemplate<RealType> &va, const Vector4DTemplate<RealType> &vb) {
-    using rtc8::min;
-    return Vector4DTemplate<RealType>(min(va.x, vb.x), min(va.y, vb.y), min(va.z, vb.z), min(va.w, vb.w));
+    return Vector4DTemplate<RealType>(
+        std::fmin(va.x, vb.x),
+        std::fmin(va.y, vb.y),
+        std::fmin(va.z, vb.z),
+        std::fmin(va.w, vb.w));
 }
 
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr Vector4DTemplate<RealType> max(
     const Vector4DTemplate<RealType> &va, const Vector4DTemplate<RealType> &vb) {
-    using rtc8::max;
-    return Vector4DTemplate<RealType>(max(va.x, vb.x), max(va.y, vb.y), max(va.z, vb.z), max(va.w, vb.w));
+    return Vector4DTemplate<RealType>(
+        std::fmax(va.x, vb.x),
+        std::fmax(va.y, vb.y),
+        std::fmax(va.z, vb.z),
+        std::fmax(va.w, vb.w));
 }
 
 // END: Vector4D operators and functions
@@ -3048,15 +3066,19 @@ CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> operator/(
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> min(
     const RGBTemplate<RealType> &va, const RGBTemplate<RealType> &vb) {
-    using rtc8::min;
-    return RGBTemplate<RealType>(min(va.r, vb.r), min(va.g, vb.g), min(va.b, vb.b));
+    return RGBTemplate<RealType>(
+        std::fmin(va.r, vb.r),
+        std::fmin(va.g, vb.g),
+        std::fmin(va.b, vb.b));
 }
 
 template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> max(
     const RGBTemplate<RealType> &va, const RGBTemplate<RealType> &vb) {
-    using rtc8::max;
-    return RGBTemplate<RealType>(max(va.r, vb.r), max(va.g, vb.g), max(va.b, vb.b));
+    return RGBTemplate<RealType>(
+        std::fmax(va.r, vb.r),
+        std::fmax(va.g, vb.g),
+        std::fmax(va.b, vb.b));
 }
 
 template <typename RealType>

@@ -197,11 +197,11 @@ CUDA_COMMON_FUNCTION CUDA_INLINE uint32_t nthSetBit(uint32_t value, int32_t n) {
 
 template <typename T>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr T min(const T &a, const T &b) {
-    return a < b ? a : b;
+    return b < a ? b : a;
 }
 template <typename T>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr T max(const T &a, const T &b) {
-    return a > b ? a : b;
+    return b > a ? b : a;
 }
 template <typename T>
 CUDA_COMMON_FUNCTION CUDA_INLINE constexpr T clamp(const T &v, const T &minv, const T &maxv) {

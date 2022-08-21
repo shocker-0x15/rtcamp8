@@ -225,20 +225,25 @@ CUDA_DEVICE_KERNEL void generateArHosekSkyEnvironmentalTexture(
         return;
 
     float theta = pi_v<float> * (pix.y + 0.5f) / imageSize.y;
+    float phi = 2 * pi_v<float> * (pix.x + 0.5f) / imageSize.x;
     RGBSpectrum rgb = RGBSpectrum::Zero();
-    if (theta < 0.5f * pi_v<float>) {
-        float phi = 2 * pi_v<float> *(pix.x + 0.5f) / imageSize.x;
-        Vector3D viewVec = Vector3D::fromPolarYUp(phi, theta);
+    float mTheta = theta;
+    bool inLowerHemisphere = theta >= 0.5f * pi_v<float>;
+    if (inLowerHemisphere)
+        mTheta = pi_v<float> - theta;
+
+    {
+        Vector3D viewVec = Vector3D::fromPolarYUp(phi, mTheta);
         float gamma = std::acos(clamp(dot(viewVec, sunDirection), -1.0f, 1.0f));
         float xyz[3] = { 0, 0, 0 };
         for (int bandIdx = 0; bandIdx < ArHosekSkyModelCMFSet::numBands; ++bandIdx) {
             ArHosekSkyModelState &state = states[bandIdx];
             float centerWavelength = cmfSet.centerWavelengths[bandIdx];
             float value;
-            if (gamma < state.solar_radius)
-                value = arhosekskymodel_solar_radiance(&state, theta, gamma, centerWavelength);
+            if (gamma < state.solar_radius && !inLowerHemisphere)
+                value = arhosekskymodel_solar_radiance(&state, mTheta, gamma, centerWavelength);
             else
-                value = arhosekskymodel_radiance(&state, theta, gamma, centerWavelength);
+                value = arhosekskymodel_radiance(&state, mTheta, gamma, centerWavelength);
             xyz[0] += cmfSet.xs[bandIdx] * value;
             xyz[1] += cmfSet.ys[bandIdx] * value;
             xyz[2] += cmfSet.zs[bandIdx] * value;
@@ -257,6 +262,14 @@ CUDA_DEVICE_KERNEL void generateArHosekSkyEnvironmentalTexture(
         float diffAngle = 2 * pi_v<float> * diffHue;
         s = lerp(s, 1.0f, s * std::pow(0.5f * (1 + std::cos(diffAngle)), 1.0f));
         rgb = maxV * HSVtoRGB(h, s, 1.0f);
+    }
+
+    if (inLowerHemisphere) {
+        RGBSpectrum skyValue = rgb;
+        RGBSpectrum seaValue = 0.5f * RGBSpectrum(0.01f, 0.01f, 0.1f);
+
+        float t = std::cos(mTheta);
+        rgb = lerp(skyValue, seaValue, std::pow(t, 1 / 5.0f));
     }
     dstTex.write(pix, rgb);
 }

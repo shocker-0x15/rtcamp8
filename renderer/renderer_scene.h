@@ -204,7 +204,7 @@ public:
     void allocateInstance(const Ref<Instance> &inst);
 
     void allocateVolumeGrid(
-        nanovdb::GridHandle<nanovdb::CudaDeviceBuffer> &gridHandle, float densityCoeff);
+        nanovdb::GridHandle<nanovdb::CudaDeviceBuffer> &gridHandle);
 
 
 
@@ -228,7 +228,7 @@ public:
 
     void setVolumeGrid(
         nanovdb::FloatGrid** densityGrid, nanovdb::BBox<nanovdb::Vec3f>* gridBBox,
-        float* densityCoeff, float* majorant);
+        float* majorant);
 
 
 

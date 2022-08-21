@@ -244,7 +244,7 @@ static void setUpPipelineLaunchParameters(uint32_t screenWidth, uint32_t screenH
 
         g_scene.setVolumeGrid(
             &staticPlpOnHost.densityGrid, &staticPlpOnHost.densityGridBBox,
-            &staticPlpOnHost.densityCoeff, &staticPlpOnHost.majorant);
+            &staticPlpOnHost.majorant);
 
         staticPlpOnHost.imageSize = int2(screenWidth, screenHeight);
         staticPlpOnHost.rngBuffer = rngBuffer.getSurfaceObject(0);
@@ -960,14 +960,31 @@ static int32_t runGuiApp() {
 
 
         // Debug Window
-        static bool resetAccumulation = false;
+        bool resetAccumulation = false;
         static float log10RadianceScale = 0.0f;
+        static float densityCoeff = 0.3f;
+        static float scatteringAlbedo = 0.99f;
+        static float scatteringForwardness = 0.8f;
+        static int32_t renderer = 1;
         {
             ImGui::Begin("Debug", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+
+            bool rendererChanged = false;
+            rendererChanged |= ImGui::RadioButton("Path Tracing", &renderer, 0);
+            rendererChanged |= ImGui::RadioButton("Path Tracing + NRC", &renderer, 1);
+            if (rendererChanged)
+                resetAccumulation |= true;
 
             ImGui::Text("Radiance Scale (Log10): %.2e", std::pow(10.0f, log10RadianceScale));
             resetAccumulation |= ImGui::SliderFloat(
                 "##RadianceScale", &log10RadianceScale, -5, 5, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+
+            resetAccumulation |= ImGui::SliderFloat(
+                "Density Coeff.", &densityCoeff, 0.01f, 1.0f);
+            resetAccumulation |= ImGui::SliderFloat(
+                "Albedo", &scatteringAlbedo, 0.0f, 0.999f);
+            resetAccumulation |= ImGui::SliderFloat(
+                "Forwardness", &scatteringForwardness, -0.99f, 0.99f);
 
             ImGui::End();
         }
@@ -1009,6 +1026,9 @@ static int32_t runGuiApp() {
 
         perFramePlpOnHost.instances = g_scene.getInstancesOnDevice();
 
+        perFramePlpOnHost.densityCoeff = densityCoeff;
+        perFramePlpOnHost.scatteringAlbedo = scatteringAlbedo;
+        perFramePlpOnHost.scatteringForwardness = scatteringForwardness;
         perFramePlpOnHost.radianceScale = std::pow(10.0f, log10RadianceScale);
 
         perFramePlpOnHost.enableEnvironmentalLight = enableEnvironmentalLight;
@@ -1068,7 +1088,7 @@ static int32_t runGuiApp() {
         //}
 
         curGpuTimer.entireRendering.start(curCuStream);
-        if (true) {
+        if (renderer == 1) {
             curGpuTimer.training.start(curCuStream);
 
             static uint32_t nrcBufIdx = -1;
@@ -1390,6 +1410,10 @@ static int32_t runApp() {
     perFramePlpOnHost.camera.aspect =
         static_cast<float>(renderConfigs.imageWidth) / renderConfigs.imageHeight;
     perFramePlpOnHost.outputBuffer = cudaOutputBuffer.getSurfaceObject(0);
+    perFramePlpOnHost.densityCoeff = 0.3f;
+    perFramePlpOnHost.scatteringAlbedo = 0.99f;
+    perFramePlpOnHost.scatteringForwardness = 0.85f;
+    perFramePlpOnHost.radianceScale = 0.0f;
     perFramePlpOnHost.enableEnvironmentalLight = false;
     perFramePlpOnHost.mousePosition = int2(0, 0);
     perFramePlpOnHost.enableDebugPrint = false;
@@ -1456,7 +1480,7 @@ static int32_t runApp() {
 
         constexpr bool useNRC = true;
         if (useNRC) {
-            uint32_t numTrainItrs = timeStepIndex == 0 ? 4 : 1;
+            uint32_t numTrainItrs = timeStepIndex == 0 ? 8 : 1;
             for (int trainLoop = 0; trainLoop < numTrainItrs; ++trainLoop) {
                 static uint32_t nrcBufIdx = -1;
                 nrcBufIdx = (nrcBufIdx + 1) % 2;

@@ -25,6 +25,7 @@ CUDA_DEVICE_KERNEL void prepareNRC(
             newTrainImageSize = make_int2(
                 static_cast<uint32_t>(curTrainImageSize.x / r),
                 static_cast<uint32_t>(curTrainImageSize.y / r));
+            newTrainImageSize = min(newTrainImageSize, plp.s->imageSize);
         }
         *(plp.s->trainImageSize[bufIdx]) = newTrainImageSize;
 
@@ -54,7 +55,11 @@ CUDA_DEVICE_KERNEL void propagateRadianceValues() {
 
     RGBSpectrum contribution = RGBSpectrum::Zero();
     if (terminalInfo.hasQuery) {
-        contribution = max(plp.s->inferredRadianceBuffer[linearIndex], RGBSpectrum::Zero());
+        RGBSpectrum inferredValue = plp.s->inferredRadianceBuffer[linearIndex];
+        Assert(inferredValue.allFinite(),
+               "Invalid inferred radiance value (%g, %g, %g)",
+               rgbprint(inferredValue));
+        contribution = max(inferredValue, RGBSpectrum::Zero());
         if (plp.f->radianceScale > 0)
             contribution /= plp.f->radianceScale;
 
@@ -120,7 +125,7 @@ CUDA_DEVICE_KERNEL void shuffleTrainingData() {
             query.roughness = 0.0f;
             query.diffuseReflectance = query.specularReflectance = RGBSpectrum::Zero();
         }
-        if (!targetValue.allFinite()) {
+        if (!targetValue.allNonNegativeFinite()) {
             printf("tgt: (%g, %g, %g)\n", rgbprint(targetValue));
             targetValue = RGBSpectrum::Zero();
         }
@@ -192,7 +197,11 @@ CUDA_DEVICE_KERNEL void accumulateInferredRadianceValues() {
     RGBSpectrum directCont = plp.s->perFrameContributionBuffer.read(pixelIndex);
     RGBSpectrum radiance = RGBSpectrum::Zero();
     if (terminalInfo.hasQuery) {
-        radiance = max(plp.s->inferredRadianceBuffer[linearIndex], RGBSpectrum::Zero());
+        RGBSpectrum inferredValue = plp.s->inferredRadianceBuffer[linearIndex];
+        Assert(inferredValue.allFinite(),
+               "Invalid inferred radiance value (%g, %g, %g)",
+               rgbprint(inferredValue));
+        radiance = max(inferredValue, RGBSpectrum::Zero());
         if (plp.f->radianceScale > 0)
             radiance /= plp.f->radianceScale;
 

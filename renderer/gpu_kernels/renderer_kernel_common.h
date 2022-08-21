@@ -359,8 +359,8 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE RGBSpectrum performNextEventEstimation(
 
     if (plp.s->densityGrid && visibility > 0.0f) {
         const nvdb::FloatGrid* densityGrid = plp.s->densityGrid;
-        const float densityCoeff = plp.s->densityCoeff;
-        const float majorant = plp.s->majorant;
+        const float densityCoeff = plp.f->densityCoeff;
+        const float majorant = densityCoeff * plp.s->majorant;
         const nvdb::DefaultReadAccessor<float> &acc = densityGrid->getAccessor();
         const auto sampler = nvdb::createSampler<1, nvdb::DefaultReadAccessor<float>, false>(acc);
 

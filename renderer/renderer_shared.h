@@ -122,7 +122,6 @@ struct StaticPipelineLaunchParameters {
 
     nanovdb::FloatGrid* densityGrid;
     nanovdb::BBox<nanovdb::Vec3f> densityGridBBox;
-    float densityCoeff;
     float majorant;
 
     uint32_t maxNumTrainingSuffixes;
@@ -155,6 +154,9 @@ struct PerFramePipelineLaunchParameters {
 
     uint32_t offsetToSelectUnbiasedPath;
     uint32_t nrcBufferIndex;
+    float densityCoeff;
+    float scatteringAlbedo;
+    float scatteringForwardness;
     float radianceScale;
 
     OptixTraversableHandle travHandle;
@@ -199,6 +201,10 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE bool getDebugPrintEnabled() {
 
 CUDA_DEVICE_FUNCTION CUDA_INLINE const shared::BSDFProcedureSet &getBSDFProcedureSet(uint32_t slot) {
     return plp.s->bsdfProcedureSets[slot];
+}
+
+CUDA_DEVICE_FUNCTION CUDA_INLINE const float &getScatteringForwardness() {
+    return plp.f->scatteringForwardness;
 }
 
 } // namespace rtc8::device
