@@ -1,5 +1,6 @@
 ﻿#include "renderer_scene.h"
 #include "../common/common_host.h"
+#include "../common/common_renderer_host.h"
 
 // Include glfw3.h after our OpenGL definitions
 #include "../common/utils/gl_util.h"
@@ -964,7 +965,7 @@ static int32_t runGuiApp() {
         static float log10RadianceScale = 0.0f;
         static float densityCoeff = 0.3f;
         static float scatteringAlbedo = 0.99f;
-        static float scatteringForwardness = 0.8f;
+        static float scatteringForwardness = 0.0f;
         static int32_t renderer = 1;
         {
             ImGui::Begin("Debug", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
@@ -1412,7 +1413,7 @@ static int32_t runApp() {
     perFramePlpOnHost.outputBuffer = cudaOutputBuffer.getSurfaceObject(0);
     perFramePlpOnHost.densityCoeff = 0.3f;
     perFramePlpOnHost.scatteringAlbedo = 0.99f;
-    perFramePlpOnHost.scatteringForwardness = 0.85f;
+    perFramePlpOnHost.scatteringForwardness = 0.0f;
     perFramePlpOnHost.radianceScale = 0.0f;
     perFramePlpOnHost.enableEnvironmentalLight = false;
     perFramePlpOnHost.mousePosition = int2(0, 0);

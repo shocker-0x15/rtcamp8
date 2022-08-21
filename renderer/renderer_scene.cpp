@@ -606,7 +606,7 @@ void AnalyticSkyEnvironment::computeDistribution(
         uint32_t width = m_image->getWidth();
         uint32_t height = m_image->getHeight();
         float4* data = m_image->getCudaArray()->map<float4>();
-        saveImageHDR("skyenv.exr", width, height, 1.0f, data, false);
+        saveImageHDR("skyenv.exr", width, height, 4, 1.0f, reinterpret_cast<float*>(data), false);
         m_image->getCudaArray()->unmap();
     }
 

@@ -43,9 +43,7 @@
 #   include <immintrin.h>
 #endif
 
-
-
-#include "../common/utils/optixu_on_cudau.h"
+#include "../common/utils/cuda_util.h"
 
 
 

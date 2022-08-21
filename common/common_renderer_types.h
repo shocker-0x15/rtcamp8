@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "basic_types.h"
+#include "../common/utils/optixu_on_cudau.h"
 
 // JP: Callable Programや関数ポインターによる動的な関数呼び出しを
 //     無くした場合の性能を見たい場合にこのマクロを有効化する。
@@ -73,21 +74,6 @@ CUDA_CONSTANT_MEM void* c_callableToPointerMap[NumCallablePrograms];
 #else
 #   define CUDA_DECLARE_CALLABLE_PROGRAM_POINTER(name)
 #endif
-
-
-
-namespace rtc8 {
-    using Point3D = Point3DTemplate<float>;
-    using Vector3D = Vector3DTemplate<float>;
-    using Normal3D = Normal3DTemplate<float>;
-    using Vector4D = Vector4DTemplate<float>;
-    using TexCoord2D = TexCoord2DTemplate<float>;
-    using Matrix3x3 = Matrix3x3Template<float>;
-    using Matrix4x4 = Matrix4x4Template<float>;
-    using Quaternion = QuaternionTemplate<float>;
-    using BoundingBox3D = BoundingBox3DTemplate<float>;
-    using RGBSpectrum = RGBTemplate<float>;
-} // namespace rtc8
 
 
 

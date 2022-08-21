@@ -417,289 +417,6 @@ void SlotFinder::debugPrint() const {
 
 
 
-template <typename RealType>
-void DiscreteDistribution1DTemplate<RealType, false>::
-initialize(CUcontext cuContext, cudau::BufferType type, const RealType* values, size_t numValues) {
-    Assert(!m_isInitialized, "Already initialized!");
-    m_numValues = static_cast<uint32_t>(numValues);
-    if (m_numValues == 0) {
-        m_integral = 0.0f;
-        return;
-    }
-
-    m_weights.initialize(cuContext, type, m_numValues);
-    m_CDF.initialize(cuContext, type, m_numValues);
-
-    if (values == nullptr) {
-        m_integral = 0.0f;
-        m_isInitialized = true;
-        return;
-    }
-
-    RealType* weights = m_weights.map();
-    std::memcpy(weights, values, sizeof(RealType) * m_numValues);
-    m_weights.unmap();
-
-    RealType* CDF = m_CDF.map();
-
-    CompensatedSum<RealType> sum(0);
-    for (uint32_t i = 0; i < m_numValues; ++i) {
-        CDF[i] = sum;
-        sum += values[i];
-    }
-    m_integral = sum;
-
-    m_CDF.unmap();
-
-    m_isInitialized = true;
-}
-
-template <typename RealType>
-void DiscreteDistribution1DTemplate<RealType, true>::
-initialize(CUcontext cuContext, cudau::BufferType type, const RealType* values, size_t numValues) {
-    Assert(!m_isInitialized, "Already initialized!");
-    m_numValues = static_cast<uint32_t>(numValues);
-    if (m_numValues == 0) {
-        m_integral = 0.0f;
-        return;
-    }
-
-    m_weights.initialize(cuContext, type, m_numValues);
-    m_aliasTable.initialize(cuContext, type, m_numValues);
-    m_valueMaps.initialize(cuContext, type, m_numValues);
-
-    if (values == nullptr) {
-        m_integral = 0.0f;
-        m_isInitialized = true;
-        return;
-    }
-
-    RealType* weights = m_weights.map();
-    std::memcpy(weights, values, sizeof(RealType) * m_numValues);
-    m_weights.unmap();
-
-    CompensatedSum<RealType> sum(0);
-    for (uint32_t i = 0; i < m_numValues; ++i)
-        sum += values[i];
-    RealType avgWeight = sum / m_numValues;
-    m_integral = sum;
-
-    struct IndexAndWeight {
-        uint32_t index;
-        RealType weight;
-        IndexAndWeight() {}
-        IndexAndWeight(uint32_t _index, RealType _weight) :
-            index(_index), weight(_weight) {}
-    };
-
-    std::vector<IndexAndWeight> smallGroup;
-    std::vector<IndexAndWeight> largeGroup;
-    for (uint32_t i = 0; i < m_numValues; ++i) {
-        RealType weight = values[i];
-        IndexAndWeight entry(i, weight);
-        if (weight <= avgWeight)
-            smallGroup.push_back(entry);
-        else
-            largeGroup.push_back(entry);
-    }
-    shared::AliasTableEntry<RealType>* aliasTable = m_aliasTable.map();
-    shared::AliasValueMap<RealType>* valueMaps = m_valueMaps.map();
-    for (int i = 0; !smallGroup.empty() && !largeGroup.empty(); ++i) {
-        IndexAndWeight smallPair = smallGroup.back();
-        smallGroup.pop_back();
-        IndexAndWeight &largePair = largeGroup.back();
-        uint32_t secondIndex = largePair.index;
-        RealType reducedWeight = (largePair.weight + smallPair.weight) - avgWeight;
-        largePair.weight = reducedWeight;
-        if (largePair.weight <= avgWeight) {
-            smallGroup.push_back(largePair);
-            largeGroup.pop_back();
-        }
-        RealType probToPickFirst = smallPair.weight / avgWeight;
-        aliasTable[smallPair.index] = shared::AliasTableEntry<RealType>(secondIndex, probToPickFirst);
-
-        shared::AliasValueMap<RealType> valueMap;
-        RealType probToPickSecond = 1 - probToPickFirst;
-        valueMap.scaleForFirst = avgWeight / values[smallPair.index];
-        valueMap.scaleForSecond = avgWeight / values[secondIndex];
-        valueMap.offsetForSecond = (reducedWeight - smallPair.weight) / values[secondIndex];
-        valueMaps[smallPair.index] = valueMap;
-    }
-    while (!smallGroup.empty() || !largeGroup.empty()) {
-        IndexAndWeight pair;
-        if (!smallGroup.empty()) {
-            pair = smallGroup.back();
-            smallGroup.pop_back();
-        }
-        else {
-            pair = largeGroup.back();
-            largeGroup.pop_back();
-        }
-        aliasTable[pair.index] = shared::AliasTableEntry<RealType>(0xFFFFFFFF, 1.0f);
-
-        shared::AliasValueMap<RealType> valueMap;
-        valueMap.scaleForFirst = avgWeight / values[pair.index];
-        valueMap.scaleForSecond = 0;
-        valueMap.offsetForSecond = 0;
-        valueMaps[pair.index] = valueMap;
-    }
-    m_valueMaps.unmap();
-    m_aliasTable.unmap();
-
-    m_isInitialized = true;
-}
-
-template class DiscreteDistribution1DTemplate<float, false>;
-template class DiscreteDistribution1DTemplate<float, true>;
-
-
-
-template <typename RealType>
-void RegularConstantContinuousDistribution1DTemplate<RealType, false>::
-initialize(CUcontext cuContext, cudau::BufferType type, const RealType* values, size_t numValues) {
-    Assert(!m_isInitialized, "Already initialized!");
-    m_numValues = static_cast<uint32_t>(numValues);
-    if (m_numValues == 0) {
-        m_integral = 0.0f;
-        return;
-    }
-
-    m_weights.initialize(cuContext, type, m_numValues);
-    m_CDF.initialize(cuContext, type, m_numValues);
-
-    if (values == nullptr) {
-        m_integral = 0.0f;
-        m_isInitialized = true;
-        return;
-    }
-
-    RealType* weights = m_weights.map();
-    std::memcpy(weights, values, sizeof(RealType) * m_numValues);
-    m_weights.unmap();
-
-    RealType* CDF = m_CDF.map();
-
-    CompensatedSum<RealType> sum(0);
-    for (uint32_t i = 0; i < m_numValues; ++i) {
-        CDF[i] = sum;
-        sum += weights[i];
-    }
-    m_integral = sum / m_numValues;
-
-    m_CDF.unmap();
-
-    m_isInitialized = true;
-}
-
-template <typename RealType>
-void RegularConstantContinuousDistribution1DTemplate<RealType, true>::
-initialize(CUcontext cuContext, cudau::BufferType type, const RealType* values, size_t numValues) {
-    Assert(!m_isInitialized, "Already initialized!");
-    m_numValues = static_cast<uint32_t>(numValues);
-    if (m_numValues == 0) {
-        m_integral = 0.0f;
-        return;
-    }
-
-    m_PDF.initialize(cuContext, type, m_numValues);
-    m_aliasTable.initialize(cuContext, type, m_numValues);
-    m_valueMaps.initialize(cuContext, type, m_numValues);
-
-    if (values == nullptr) {
-        m_integral = 0.0f;
-        m_isInitialized = true;
-        return;
-    }
-
-    RealType* PDF = m_PDF.map();
-    std::memcpy(PDF, values, sizeof(RealType) * m_numValues);
-
-    CompensatedSum<RealType> sum(0);
-    for (uint32_t i = 0; i < m_numValues; ++i)
-        sum += values[i];
-    RealType avgWeight = sum / m_numValues;
-    m_integral = avgWeight;
-
-    for (uint32_t i = 0; i < m_numValues; ++i)
-        PDF[i] /= m_integral;
-    m_PDF.unmap();
-
-    struct IndexAndWeight {
-        uint32_t index;
-        RealType weight;
-        IndexAndWeight() {}
-        IndexAndWeight(uint32_t _index, RealType _weight) :
-            index(_index), weight(_weight) {}
-    };
-
-    std::vector<IndexAndWeight> smallGroup;
-    std::vector<IndexAndWeight> largeGroup;
-    for (uint32_t i = 0; i < m_numValues; ++i) {
-        RealType weight = values[i];
-        IndexAndWeight entry(i, weight);
-        if (weight <= avgWeight)
-            smallGroup.push_back(entry);
-        else
-            largeGroup.push_back(entry);
-    }
-
-    shared::AliasTableEntry<RealType>* aliasTable = m_aliasTable.map();
-    shared::AliasValueMap<RealType>* valueMaps = m_valueMaps.map();
-    for (int i = 0; !smallGroup.empty() && !largeGroup.empty(); ++i) {
-        IndexAndWeight smallPair = smallGroup.back();
-        smallGroup.pop_back();
-        IndexAndWeight &largePair = largeGroup.back();
-        uint32_t secondIndex = largePair.index;
-        RealType reducedWeight = (largePair.weight + smallPair.weight) - avgWeight;
-        largePair.weight = reducedWeight;
-        if (largePair.weight <= avgWeight) {
-            smallGroup.push_back(largePair);
-            largeGroup.pop_back();
-        }
-        RealType probToPickFirst = smallPair.weight / avgWeight;
-        aliasTable[smallPair.index] = shared::AliasTableEntry<RealType>(secondIndex, probToPickFirst);
-
-        shared::AliasValueMap<RealType> valueMap;
-        RealType probToPickSecond = 1 - probToPickFirst;
-        valueMap.scaleForFirst = avgWeight / values[smallPair.index];
-        valueMap.scaleForSecond = avgWeight / values[secondIndex];
-        valueMap.offsetForSecond = (reducedWeight - smallPair.weight) / values[secondIndex];
-        valueMaps[smallPair.index] = valueMap;
-    }
-    while (!smallGroup.empty() || !largeGroup.empty()) {
-        IndexAndWeight pair;
-        if (!smallGroup.empty()) {
-            pair = smallGroup.back();
-            smallGroup.pop_back();
-        }
-        else {
-            pair = largeGroup.back();
-            largeGroup.pop_back();
-        }
-        aliasTable[pair.index] = shared::AliasTableEntry<RealType>(0xFFFFFFFF, 1.0f);
-
-        shared::AliasValueMap<RealType> valueMap;
-        valueMap.scaleForFirst = avgWeight / values[pair.index];
-        valueMap.scaleForSecond = 0;
-        valueMap.offsetForSecond = 0;
-        valueMaps[pair.index] = valueMap;
-    }
-    m_valueMaps.unmap();
-    m_aliasTable.unmap();
-
-    m_isInitialized = true;
-}
-
-template class RegularConstantContinuousDistribution1DTemplate<float, false>;
-template class RegularConstantContinuousDistribution1DTemplate<float, true>;
-
-
-
-template class RegularConstantContinuousDistribution2DTemplate<float, false>;
-template class RegularConstantContinuousDistribution2DTemplate<float, true>;
-
-
-
 static bool s_fpng_initialized = false;
 
 void saveImage(
@@ -724,7 +441,7 @@ void saveImage(
 }
 
 void saveImageHDR(
-    const std::filesystem::path &filepath, uint32_t width, uint32_t height,
+    const std::filesystem::path &filepath, uint32_t width, uint32_t height, uint32_t numChs,
     float brightnessScale,
     const float* data, bool flipY) {
     EXRHeader header;
@@ -745,76 +462,18 @@ void saveImageHDR(
         for (int x = 0; x < width; ++x) {
             uint32_t srcIdx = y * width + x;
             uint32_t dstIdx = (flipY ? (height - 1 - y) : y) * width + x;
-            images[0][dstIdx] = brightnessScale * data[srcIdx];
+            images[0][dstIdx] = brightnessScale * data[numChs * srcIdx + 0];
             images[1][dstIdx] = 0.0f;
             images[2][dstIdx] = 0.0f;
             images[3][dstIdx] = 0.0f;
-        }
-    }
-
-    float* image_ptr[4];
-    image_ptr[0] = &(images[3].at(0)); // A
-    image_ptr[1] = &(images[2].at(0)); // B
-    image_ptr[2] = &(images[1].at(0)); // G
-    image_ptr[3] = &(images[0].at(0)); // R
-
-    image.images = (unsigned char**)image_ptr;
-    image.width = width;
-    image.height = height;
-
-    header.num_channels = 4;
-    header.channels = (EXRChannelInfo *)malloc(sizeof(EXRChannelInfo) * header.num_channels);
-    // Must be (A)BGR order, since most of EXR viewers expect this channel order.
-    strncpy(header.channels[0].name, "A", 255); header.channels[0].name[strlen("A")] = '\0';
-    strncpy(header.channels[1].name, "B", 255); header.channels[1].name[strlen("B")] = '\0';
-    strncpy(header.channels[2].name, "G", 255); header.channels[2].name[strlen("G")] = '\0';
-    strncpy(header.channels[3].name, "R", 255); header.channels[3].name[strlen("R")] = '\0';
-
-    header.pixel_types = (int32_t*)malloc(sizeof(int32_t) * header.num_channels);
-    header.requested_pixel_types = (int32_t*)malloc(sizeof(int32_t) * header.num_channels);
-    for (int i = 0; i < header.num_channels; i++) {
-        header.pixel_types[i] = TINYEXR_PIXELTYPE_FLOAT; // pixel type of input image
-        header.requested_pixel_types[i] = TINYEXR_PIXELTYPE_HALF; // pixel type of output image to be stored in .EXR
-    }
-
-    const char* err = nullptr;
-    int32_t ret = SaveEXRImageToFile(&image, &header, filepath.string().c_str(), &err);
-    if (ret != TINYEXR_SUCCESS) {
-        fprintf(stderr, "Save EXR err: %s\n", err);
-        FreeEXRErrorMessage(err);
-    }
-
-    free(header.channels);
-    free(header.pixel_types);
-    free(header.requested_pixel_types);
-}
-
-void saveImageHDR(
-    const std::filesystem::path &filepath, uint32_t width, uint32_t height,
-    float brightnessScale,
-    const float4* data, bool flipY) {
-    EXRHeader header;
-    InitEXRHeader(&header);
-
-    EXRImage image;
-    InitEXRImage(&image);
-
-    image.num_channels = 4;
-
-    std::vector<float> images[4];
-    images[0].resize(width * height);
-    images[1].resize(width * height);
-    images[2].resize(width * height);
-    images[3].resize(width * height);
-
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            uint32_t srcIdx = y * width + x;
-            uint32_t dstIdx = (flipY ? (height - 1 - y) : y) * width + x;
-            images[0][dstIdx] = brightnessScale * data[srcIdx].x;
-            images[1][dstIdx] = brightnessScale * data[srcIdx].y;
-            images[2][dstIdx] = brightnessScale * data[srcIdx].z;
-            images[3][dstIdx] = brightnessScale * data[srcIdx].w;
+            if (numChs >= 2) {
+                images[1][dstIdx] = brightnessScale * data[numChs * srcIdx + 1];
+                if (numChs >= 3) {
+                    images[2][dstIdx] = brightnessScale * data[numChs * srcIdx + 2];
+                    if (numChs == 4)
+                        images[3][dstIdx] = brightnessScale * data[numChs * srcIdx + 3];
+                }
+            }
         }
     }
 
@@ -856,63 +515,51 @@ void saveImageHDR(
 }
 
 void saveImage(
-    const std::filesystem::path &filepath, uint32_t width, uint32_t height, const float4* data,
+    const std::filesystem::path &filepath,
+    uint32_t width, uint32_t height, uint32_t numChs, const float* data,
     const SDRImageSaverConfig &config) {
     auto image = new uint32_t[width * height];
     for (int y = 0; y < static_cast<int32_t>(height); ++y) {
         uint32_t sy = config.flipY ? (height - 1 - y) : y;
         for (int x = 0; x < static_cast<int32_t>(width); ++x) {
-            float4 src = data[sy * width + x];
-            if (config.alphaForOverride >= 0.0f)
-                src.w = config.alphaForOverride;
+            uint32_t idx = sy * width + x;
+            RGBSpectrum value = RGBSpectrum::Zero();
+            float alpha = 1.0f;
+
+            value.r = data[numChs * idx + 0];
+            if (numChs >= 2) {
+                value.g = data[numChs * idx + 1];
+                if (numChs >= 3) {
+                    value.b = data[numChs * idx + 2];
+                    if (numChs == 4)
+                        alpha = data[numChs * idx + 3];
+                }
+            }
             if (config.applyToneMap) {
-                RGBSpectrum rgb(src.x, src.y, src.z);
-                if (!rgb.allFinite())
-                    rgb = RGBSpectrum::Zero();
-                float lum = rgb.luminance();
+                if (!value.allFinite())
+                    value = RGBSpectrum::Zero();
+                float lum = value.luminance();
                 float lumT = simpleToneMap_s(config.brightnessScale * lum);
                 float s = lum > 0.0f ? lumT / lum : 0.0f;
-                rgb *= s;
-                src.x = rgb.r;
-                src.y = rgb.g;
-                src.z = rgb.b;
+                value *= s;
             }
-            if (config.apply_sRGB_gammaCorrection) {
-                src.x = sRGB_gamma_s(src.x);
-                src.y = sRGB_gamma_s(src.y);
-                src.z = sRGB_gamma_s(src.z);
-            }
+            if (config.apply_sRGB_gammaCorrection)
+                value = sRGB_gamma(value);
+
+            if (config.alphaForOverride >= 0.0f)
+                alpha = config.alphaForOverride;
+
             uint32_t &dst = image[y * width + x];
-            dst = ((std::min<uint32_t>(static_cast<uint32_t>(src.x * 255), 255) << 0) |
-                   (std::min<uint32_t>(static_cast<uint32_t>(src.y * 255), 255) << 8) |
-                   (std::min<uint32_t>(static_cast<uint32_t>(src.z * 255), 255) << 16) |
-                   (std::min<uint32_t>(static_cast<uint32_t>(src.w * 255), 255) << 24));
+            dst = ((std::min<uint32_t>(static_cast<uint32_t>(value.r * 255), 255) << 0) |
+                   (std::min<uint32_t>(static_cast<uint32_t>(value.g * 255), 255) << 8) |
+                   (std::min<uint32_t>(static_cast<uint32_t>(value.b * 255), 255) << 16) |
+                   (std::min<uint32_t>(static_cast<uint32_t>(alpha * 255), 255) << 24));
         }
     }
 
     saveImage(filepath, width, height, image);
 
     delete[] image;
-}
-
-void saveImage(
-    const std::filesystem::path &filepath,
-    uint32_t width, cudau::TypedBuffer<float4> &buffer,
-    const SDRImageSaverConfig &config) {
-    Assert(buffer.numElements() % width == 0, "Buffer's length is not divisible by the width.");
-    uint32_t height = buffer.numElements() / width;
-    auto data = buffer.map();
-    saveImage(filepath, width, height, data, config);
-    buffer.unmap();
-}
-
-void saveImage(
-    const std::filesystem::path &filepath,
-    cudau::Array &array,
-    const SDRImageSaverConfig &config) {
-    auto data = array.map<float4>();
-    saveImage(filepath, array.getWidth(), array.getHeight(), data, config);
-    array.unmap();
 }
 
 
@@ -959,7 +606,8 @@ public:
             }
 
             cpuTimer.start();
-            saveImage(item.filePath, item.width, item.height, item.data.get(), item.config);
+            saveImage(item.filePath, item.width, item.height, 4,
+                      reinterpret_cast<const float*>(item.data.get()), item.config);
             uint64_t saveTime = cpuTimer.getElapsed(StopWatchDurationType::Milliseconds);
             cpuTimer.reset();
             hpprintf("Save %s: %.3f [s]\n", item.filePath.string().c_str(), saveTime * 1e-3f);

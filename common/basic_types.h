@@ -3177,6 +3177,15 @@ CUDA_COMMON_FUNCTION CUDA_INLINE RGBTemplate<RealType> sRGB_degamma(
         sRGB_degamma_s(value.b));
 }
 
+template <typename RealType>
+CUDA_COMMON_FUNCTION CUDA_INLINE RGBTemplate<RealType> sRGB_gamma(
+    const RGBTemplate<RealType> &value) {
+    return RGBTemplate<RealType>(
+        sRGB_gamma_s(value.r),
+        sRGB_gamma_s(value.g),
+        sRGB_gamma_s(value.b));
+}
+
 
 
 extern const float xbar_CIE1931_deg2[];
@@ -3187,5 +3196,18 @@ void computeDiscretizedXyzCmfs(
     uint32_t numBands,
     float* centerWavelengths,
     float* xs, float* ys, float* zs, float* integralCmf);
+
+
+
+using Point3D = Point3DTemplate<float>;
+using Vector3D = Vector3DTemplate<float>;
+using Normal3D = Normal3DTemplate<float>;
+using Vector4D = Vector4DTemplate<float>;
+using TexCoord2D = TexCoord2DTemplate<float>;
+using Matrix3x3 = Matrix3x3Template<float>;
+using Matrix4x4 = Matrix4x4Template<float>;
+using Quaternion = QuaternionTemplate<float>;
+using BoundingBox3D = BoundingBox3DTemplate<float>;
+using RGBSpectrum = RGBTemplate<float>;
 
 } // namespace rtc8

@@ -1,7 +1,7 @@
 ﻿#pragma once
 
 #include "renderer_shared.h"
-#include "../common/common_host.h"
+#include "../common/common_renderer_host.h"
 #include "network_interface.h"
 #include "../ext/cubd/cubd.h"
 
@@ -952,7 +952,7 @@ static void computeImportanceMap(
         config.apply_sRGB_gammaCorrection = false;
         config.brightnessScale = 1.0f;
         config.flipY = false;
-        saveImage("vis00.png", curDims.x, curDims.y, image, config);
+        saveImage("vis00.png", curDims.x, curDims.y, 4, reinterpret_cast<float*>(image), config);
         delete[] image;
         cudaArray->unmap();
     }
@@ -984,7 +984,7 @@ static void computeImportanceMap(
             config.flipY = false;
             char filename[256];
             sprintf_s(filename, "vis%02u.png", mipLevel);
-            saveImage(filename, curDims.x, curDims.y, image, config);
+            saveImage(filename, curDims.x, curDims.y, 4, reinterpret_cast<float*>(image), config);
             delete[] image;
             cudaArray->unmap(mipLevel);
 
@@ -1042,7 +1042,7 @@ static void computeImportanceMap(
         config.apply_sRGB_gammaCorrection = false;
         config.brightnessScale = 1.0f;
         config.flipY = false;
-        saveImage("histogram.png", width, height, image, config);
+        saveImage("histogram.png", width, height, 4, reinterpret_cast<float*>(image), config);
         delete[] image;
         histogram.unmap();
     }

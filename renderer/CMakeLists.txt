@@ -88,6 +88,7 @@ source_group(
 add_executable(
     "${TARGET_NAME}"
     ${COMMON_SOURCES}
+    ${COMMON_RENDERER_SOURCES}
     ${SOURCES}
     ${GL3W_SOURCES}
     ${CUDA_KERNELS}

@@ -33,24 +33,13 @@ endif()
 file(
     GLOB_RECURSE COMMON_SOURCES
     "common/*"
-    "ext/cubd/cubd.h"
-    "ext/glfw/include/*"
-    "ext/imgui/*"
-    "ext/tinyexr/*"
     "ext/fpng/src/fpng.h"
     "ext/fpng/src/fpng.cpp"
-    "ext/hosek_wilkie_2013/*"
-    "ext/nanovdb/nanovdb/*"
+    "ext/tinyexr/*"
 )
 list(
     FILTER COMMON_SOURCES INCLUDE REGEX
     ".*\.(h|hpp|cuh|c|cc|cpp|cu|vert|frag)$")
-list(
-    FILTER COMMON_SOURCES EXCLUDE REGEX
-    "ext/imgui/imgui_demo\.cpp$")
-list(
-    FILTER COMMON_SOURCES EXCLUDE REGEX
-    "ext/imgui/(backends|misc|examples)/.*")
 list(
     FILTER COMMON_SOURCES EXCLUDE REGEX
     "ext/tinyexr/deps/miniz/examples/.*")
@@ -63,12 +52,6 @@ list(
 list(
     FILTER COMMON_SOURCES EXCLUDE REGEX
     "ext/tinyexr/test_tinyexr.cc$")
-list(
-    FILTER COMMON_SOURCES EXCLUDE REGEX
-    "ext/cubd/.*(cpp|cu)$")
-list(
-    FILTER COMMON_SOURCES EXCLUDE REGEX
-    "ext/cubd/cuda_util.*$")
 file(GLOB STB_SOURCES "ext/stb_*")
 file(
     GLOB IMGUI_BACKEND_SOURCES
@@ -79,11 +62,56 @@ set(
     COMMON_SOURCES
     ${COMMON_SOURCES}
     ${STB_SOURCES}
-    ${IMGUI_BACKEND_SOURCES}
 )
 # foreach(f IN LISTS COMMON_SOURCES)
 #     message("${f}")
 # endforeach()
+
+
+
+file(
+    GLOB_RECURSE COMMON_RENDERER_SOURCES
+    "ext/cubd/cubd.h"
+    "ext/glfw/include/*"
+    "ext/imgui/*"
+    "ext/hosek_wilkie_2013/*"
+    "ext/nanovdb/nanovdb/*"
+)
+list(
+    FILTER COMMON_RENDERER_SOURCES INCLUDE REGEX
+    ".*\.(h|hpp|cuh|c|cc|cpp|cu|vert|frag)$")
+list(
+    FILTER COMMON_RENDERER_SOURCES EXCLUDE REGEX
+    "ext/imgui/imgui_demo\.cpp$")
+list(
+    FILTER COMMON_RENDERER_SOURCES EXCLUDE REGEX
+    "ext/imgui/(backends|misc|examples)/.*")
+list(
+    FILTER COMMON_RENDERER_SOURCES EXCLUDE REGEX
+    "ext/tinyexr/deps/miniz/examples/.*")
+list(
+    FILTER COMMON_RENDERER_SOURCES EXCLUDE REGEX
+    "ext/tinyexr/deps/ZFP/.*")
+list(
+    FILTER COMMON_RENDERER_SOURCES EXCLUDE REGEX
+    "ext/tinyexr/(examples|experimental|test)/.*")
+list(
+    FILTER COMMON_RENDERER_SOURCES EXCLUDE REGEX
+    "ext/cubd/.*(cpp|cu)$")
+list(
+    FILTER COMMON_RENDERER_SOURCES EXCLUDE REGEX
+    "ext/cubd/cuda_util.*$")
+file(GLOB STB_SOURCES "ext/stb_*")
+file(
+    GLOB IMGUI_BACKEND_SOURCES
+    "ext/imgui/backends/imgui_impl_glfw*"
+    "ext/imgui/backends/imgui_impl_opengl3*"
+)
+set(
+    COMMON_RENDERER_SOURCES
+    ${COMMON_RENDERER_SOURCES}
+    ${IMGUI_BACKEND_SOURCES}
+)
 
 # END:JP: プロジェクト間で共通のソースコードのリスト作成。
 # ----------------------------------------------------------------
@@ -322,3 +350,4 @@ target_link_libraries(
 )
 
 add_subdirectory(renderer)
+add_subdirectory(denoiser)
