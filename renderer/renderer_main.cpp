@@ -1604,7 +1604,7 @@ static void parseCommandline(int32_t argc, const char* argv[]) {
         if (strncmp(arg, "-", 1) != 0)
             continue;
 
-        if (strncmp(arg, "-no-gui", 12) == 0) {
+        if (strncmp(arg, "-no-gui", 8) == 0) {
             g_guiMode = false;
         }
         else if (strncmp(arg, "-scene", 7) == 0) {

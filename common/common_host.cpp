@@ -538,13 +538,24 @@ void saveImage(
             if (config.applyToneMap) {
                 if (!value.allFinite())
                     value = RGBSpectrum::Zero();
+                if (value.hasNegative()) {
+                    hpprintf("%4u, %4u: negative value %g, %g, %g\n",
+                             x, y, rgbprint(value));
+                    value = max(value, RGBSpectrum::Zero());
+                }
                 float lum = value.luminance();
                 float lumT = simpleToneMap_s(config.brightnessScale * lum);
                 float s = lum > 0.0f ? lumT / lum : 0.0f;
                 value *= s;
             }
-            if (config.apply_sRGB_gammaCorrection)
+            if (config.apply_sRGB_gammaCorrection) {
+                if (value.hasNegative()) {
+                    hpprintf("%4u, %4u: negative value %g, %g, %g\n",
+                             x, y, rgbprint(value));
+                    value = max(value, RGBSpectrum::Zero());
+                }
                 value = sRGB_gamma(value);
+            }
 
             if (config.alphaForOverride >= 0.0f)
                 alpha = config.alphaForOverride;

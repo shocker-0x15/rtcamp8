@@ -48,10 +48,10 @@ file(
     GLOB_RECURSE SOURCES
     *.h *.hpp *.c *.cpp)
 
-# set(
-#     CUDA_SOURCES
-#     "network_interface.cu"
-# )
+set(
+    CUDA_SOURCES
+    "network_interface.cu"
+)
 
 set(
     GPU_KERNEL_DEPENDENCIES
