@@ -1,5 +1,6 @@
 #include "network_interface.h"
 #include "../common/common_shared.h"
+#include "denoiser_shared.h"
 
 #include <cuda_runtime.h>
 
@@ -8,16 +9,14 @@
 #endif
 #include <tiny-cuda-nn/config.h>
 #include <memory>
+#include <fstream>
 
 namespace rtc8 {
 
 using namespace tcnn;
 using precision_t = network_precision_t;
 
-// noisy color: 3
-// albedo: 3
-// normal: 3
-constexpr static uint32_t numInputDims = (3 + 3 + 3) * 7 * 7;
+constexpr static uint32_t numInputDims = sizeof(shared::TrainingItem) / sizeof(float);
 // denoised color: 3
 constexpr static uint32_t numOutputDims = 3;
 
@@ -103,6 +102,18 @@ void Denoiser::train(
     auto context = m->trainer->training_step(stream, inputs, targets);
     if (lossOnCPU)
         *lossOnCPU = m->trainer->loss(stream, *context);
+}
+
+void Denoiser::serialize(const std::filesystem::path &filepath) const {
+    json data = m->trainer->serialize(false);
+    std::ofstream f(filepath, std::ios::out | std::ios::binary);
+    json::to_msgpack(data, f);
+}
+
+void Denoiser::deserialize(const std::filesystem::path &filepath) {
+    std::ifstream f(filepath, std::ios::in | std::ios::binary);
+    json data = json::from_msgpack(f);
+    m->trainer->deserialize(data);
 }
 
 } // namespace rtc8

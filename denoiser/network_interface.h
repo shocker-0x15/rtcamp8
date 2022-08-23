@@ -2,6 +2,7 @@
 
 #include <cuda.h>
 #include <cstdint>
+#include <filesystem>
 
 namespace rtc8 {
 
@@ -23,6 +24,9 @@ public:
     void infer(CUstream stream, float* inputData, uint32_t numData, float* predictionData);
     void train(CUstream stream, float* inputData, float* targetData, uint32_t numData,
                float* lossOnCPU = nullptr);
+
+    void serialize(const std::filesystem::path &filepath) const;
+    void deserialize(const std::filesystem::path &filepath);
 };
 
 } // namespace rtc8

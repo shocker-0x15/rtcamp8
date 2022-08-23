@@ -8,6 +8,7 @@ struct PixelFeature {
     RGBSpectrum noisyColor;
     RGBSpectrum albedo;
     Normal3D normal;
+    //float dx, dy;
 };
 
 struct TrainingItem {

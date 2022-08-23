@@ -3092,6 +3092,16 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> safeDivide(
 }
 
 template <typename RealType>
+CUDA_DEVICE_FUNCTION CUDA_INLINE constexpr RGBTemplate<RealType> safeDivide(
+    const RGBTemplate<RealType> &a, RealType b) {
+    RealType zero = static_cast<RealType>(0);
+    return RGBTemplate<RealType>(
+        b != 0 ? a.r / b : zero,
+        b != 0 ? a.g / b : zero,
+        b != 0 ? a.b / b : zero);
+}
+
+template <typename RealType>
 CUDA_COMMON_FUNCTION CUDA_INLINE RGBTemplate<RealType> HSVtoRGB(RealType h, RealType s, RealType v) {
     if (s == 0)
         return RGBTemplate<RealType>(v, v, v);
