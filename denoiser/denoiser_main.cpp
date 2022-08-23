@@ -173,6 +173,8 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
     Denoiser denoiser;
     denoiser.initialize(512, 10, 1e-3f);
 
+    constexpr bool useAlbedoDemodulation = false;
+
     if (g_appMode == AppMode::Training) {
         std::ifstream f(g_datasetConfigPath);
         json scenes = json::parse(f, nullptr, true, /*skip_comments=*/true);
@@ -306,8 +308,8 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
                 }
 
                 if (epochIdx == 0) {
-                    RGBSpectrum maxNoisyBeauty = -RGBSpectrum::Infinity();
-                    RGBSpectrum maxRefBeauty = -RGBSpectrum::Infinity();
+                    RGBSpectrum maxNoisyBeauty = RGBSpectrum::Zero();
+                    RGBSpectrum maxRefBeauty = RGBSpectrum::Zero();
                     CompensatedSum<RGBSpectrum> sumNoisyBeauty(RGBSpectrum::Zero());
                     for (int y = 0; y < height; ++y) {
                         for (int x = 0; x < width; ++x) {
@@ -384,22 +386,25 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
                                 noisyImgData[numNoisyChs * nbIdx + 0],
                                 noisyImgData[numNoisyChs * nbIdx + 1],
                                 noisyImgData[numNoisyChs * nbIdx + 2]);
+                            noisyColor = max(noisyColor, RGBSpectrum::Zero());
                             RGBSpectrum albedo(
                                 noisyImgData[numNoisyChs * nbIdx + 3],
                                 noisyImgData[numNoisyChs * nbIdx + 4],
                                 noisyImgData[numNoisyChs * nbIdx + 5]);
-                            if (albedo.r != 0 && albedo.r < 0.01f)
-                                albedo.r = 0.01f;
-                            if (albedo.g != 0 && albedo.g < 0.01f)
-                                albedo.g = 0.01f;
-                            if (albedo.b != 0 && albedo.b < 0.01f)
-                                albedo.b = 0.01f;
+                            albedo = max(albedo, RGBSpectrum::Zero());
                             Normal3D normal(
                                 noisyImgData[numNoisyChs * nbIdx + 6],
                                 noisyImgData[numNoisyChs * nbIdx + 7],
                                 noisyImgData[numNoisyChs * nbIdx + 8]);
 
-                            feature.noisyColor = safeDivide(safeDivide(noisyColor, avgLuminance), albedo);
+                            feature.noisyColor = safeDivide(noisyColor, avgLuminance);
+                            if constexpr (useAlbedoDemodulation)
+                                feature.noisyColor = safeDivide(feature.noisyColor, albedo);
+                            //if (feature.noisyColor.hasNonZero())
+                            //    printf("");
+                            //if (!feature.noisyColor.allNonNegativeFinite())
+                            //    printf("");
+                            feature.noisyColor = min(feature.noisyColor, RGBSpectrum(10));
                             feature.albedo = albedo;
                             feature.normal = normal;
                             //feature.dx = offx;
@@ -418,9 +423,15 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
                         refImgData[numRefChs * idx + 0],
                         refImgData[numRefChs * idx + 1],
                         refImgData[numRefChs * idx + 2]);
+                    refColor = max(refColor, RGBSpectrum::Zero());
                     RGBSpectrum albedo = item.neighbors[lengthof(item.neighbors) / 2].albedo;
-                    targetColors[nextItemOffset + itemIdx] =
-                        safeDivide(safeDivide(refColor, avgLuminance), albedo);
+                    RGBSpectrum &targetColor = targetColors[nextItemOffset + itemIdx];
+                    targetColor = safeDivide(refColor, avgLuminance);
+                    if constexpr (useAlbedoDemodulation)
+                        targetColor = safeDivide(targetColor, albedo);
+                    targetColor = min(targetColor, RGBSpectrum(10));
+                    //if (!targetColor.allNonNegativeFinite())
+                    //    printf("");
                 }
                 nextItemOffset += numItems;
                 numRemainingItems -= numItems;
@@ -517,10 +528,12 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
                             noisyImgData[numNoisyChs * idx + 0],
                             noisyImgData[numNoisyChs * idx + 1],
                             noisyImgData[numNoisyChs * idx + 2]);
+                        noisyBeauty = max(noisyBeauty, RGBSpectrum::Zero());
                         RGBSpectrum albedo(
                             noisyImgData[numNoisyChs * idx + 3],
                             noisyImgData[numNoisyChs * idx + 4],
                             noisyImgData[numNoisyChs * idx + 5]);
+                        albedo = max(albedo, RGBSpectrum::Zero());
 
                         sumNoisyBeauty += noisyBeauty;
                         albedos[y * width + x] = albedo;
@@ -557,22 +570,21 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
                                     noisyImgData[numNoisyChs * nbIdx + 0],
                                     noisyImgData[numNoisyChs * nbIdx + 1],
                                     noisyImgData[numNoisyChs * nbIdx + 2]);
+                                noisyColor = max(noisyColor, RGBSpectrum::Zero());
                                 RGBSpectrum albedo(
                                     noisyImgData[numNoisyChs * nbIdx + 3],
                                     noisyImgData[numNoisyChs * nbIdx + 4],
                                     noisyImgData[numNoisyChs * nbIdx + 5]);
-                                if (albedo.r != 0 && albedo.r < 0.01f)
-                                    albedo.r = 0.01f;
-                                if (albedo.g != 0 && albedo.g < 0.01f)
-                                    albedo.g = 0.01f;
-                                if (albedo.b != 0 && albedo.b < 0.01f)
-                                    albedo.b = 0.01f;
+                                albedo = max(albedo, RGBSpectrum::Zero());
                                 Normal3D normal(
                                     noisyImgData[numNoisyChs * nbIdx + 6],
                                     noisyImgData[numNoisyChs * nbIdx + 7],
                                     noisyImgData[numNoisyChs * nbIdx + 8]);
 
-                                feature.noisyColor = safeDivide(safeDivide(noisyColor, avgLuminance), albedo);
+                                feature.noisyColor = safeDivide(noisyColor, avgLuminance);
+                                if constexpr (useAlbedoDemodulation)
+                                    feature.noisyColor = safeDivide(feature.noisyColor, albedo);
+                                feature.noisyColor = min(feature.noisyColor, RGBSpectrum(10));
                                 feature.albedo = albedo;
                                 feature.normal = normal;
                                 //feature.dx = offx;
@@ -602,6 +614,7 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
                     reinterpret_cast<float*>(inputFeatureBuffer.getDevicePointer()),
                     numElementsPadded,
                     reinterpret_cast<float*>(outputBuffer.getDevicePointer()));
+                CUDADRV_CHECK(cuStreamSynchronize(cuStream));
 
                 uint32_t inferTimeIdx = sw.stop();
                 hpprintf(
@@ -613,10 +626,15 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
                 float* outputs = reinterpret_cast<float*>(outputBuffer.map());
                 albedos = albedoBuffer.map();
                 for (int i = 0; i < width * height; ++i) {
-                    RGBSpectrum albedo = albedos[i];
-                    outputs[3 * i + 0] *= avgLuminance * albedo.r;
-                    outputs[3 * i + 1] *= avgLuminance * albedo.g;
-                    outputs[3 * i + 2] *= avgLuminance * albedo.b;
+                    outputs[3 * i + 0] *= avgLuminance;
+                    outputs[3 * i + 1] *= avgLuminance;
+                    outputs[3 * i + 2] *= avgLuminance;
+                    if constexpr (useAlbedoDemodulation) {
+                        RGBSpectrum albedo = albedos[i];
+                        outputs[3 * i + 0] *= albedo.r;
+                        outputs[3 * i + 1] *= albedo.g;
+                        outputs[3 * i + 2] *= albedo.b;
+                    }
                 }
                 albedoBuffer.unmap();
                 saveImageHDR(
@@ -699,10 +717,12 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
                     noisyColorImgData[3 * idx + 0],
                     noisyColorImgData[3 * idx + 1],
                     noisyColorImgData[3 * idx + 2]);
+                noisyBeauty = max(noisyBeauty, RGBSpectrum::Zero());
                 RGBSpectrum albedo(
                     albedoImgData[3 * idx + 0],
                     albedoImgData[3 * idx + 1],
                     albedoImgData[3 * idx + 2]);
+                albedo = max(albedo, RGBSpectrum::Zero());
 
                 sumNoisyBeauty += noisyBeauty;
                 albedos[y * width + x] = albedo;
@@ -739,22 +759,21 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
                             noisyColorImgData[3 * nbIdx + 0],
                             noisyColorImgData[3 * nbIdx + 1],
                             noisyColorImgData[3 * nbIdx + 2]);
+                        noisyColor = max(noisyColor, RGBSpectrum::Zero());
                         RGBSpectrum albedo(
                             albedoImgData[3 * nbIdx + 0],
                             albedoImgData[3 * nbIdx + 1],
                             albedoImgData[3 * nbIdx + 2]);
-                        if (albedo.r != 0 && albedo.r < 0.01f)
-                            albedo.r = 0.01f;
-                        if (albedo.g != 0 && albedo.g < 0.01f)
-                            albedo.g = 0.01f;
-                        if (albedo.b != 0 && albedo.b < 0.01f)
-                            albedo.b = 0.01f;
+                        albedo = max(albedo, RGBSpectrum::Zero());
                         Normal3D normal(
                             2 * normalImgData[3 * nbIdx + 0] - 1,
                             2 * normalImgData[3 * nbIdx + 1] - 1,
                             2 * normalImgData[3 * nbIdx + 2] - 1);
 
-                        feature.noisyColor = safeDivide(safeDivide(noisyColor, avgLuminance), albedo);
+                        feature.noisyColor = safeDivide(noisyColor, avgLuminance);
+                        if constexpr (useAlbedoDemodulation)
+                            feature.noisyColor = safeDivide(feature.noisyColor, albedo);
+                        feature.noisyColor = min(feature.noisyColor, RGBSpectrum(10));
                         feature.albedo = albedo;
                         feature.normal = normal;
                         //feature.dx = offx;
@@ -793,10 +812,15 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
         float* outputs = reinterpret_cast<float*>(outputBuffer.map());
         albedos = albedoBuffer.map();
         for (int i = 0; i < width * height; ++i) {
-            RGBSpectrum albedo = albedos[i];
-            outputs[3 * i + 0] *= avgLuminance * albedo.r;
-            outputs[3 * i + 1] *= avgLuminance * albedo.g;
-            outputs[3 * i + 2] *= avgLuminance * albedo.b;
+            outputs[3 * i + 0] *= avgLuminance;
+            outputs[3 * i + 1] *= avgLuminance;
+            outputs[3 * i + 2] *= avgLuminance;
+            if constexpr (useAlbedoDemodulation) {
+                RGBSpectrum albedo = albedos[i];
+                outputs[3 * i + 0] *= albedo.r;
+                outputs[3 * i + 1] *= albedo.g;
+                outputs[3 * i + 2] *= albedo.b;
+            }
         }
         albedoBuffer.unmap();
         stbi_write_hdr("denoised.hdr", width, height, 3, outputs);
