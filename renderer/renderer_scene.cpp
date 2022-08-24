@@ -2345,8 +2345,7 @@ void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* render
 
 
     {
-        std::filesystem::path volPath =
-            R"(C:\Users\shocker_0x15\repos\instant-ngp\data\volume\wdas_cloud_quarter.nvdb)";
+        std::filesystem::path volPath = getExecutableDirectory() / "wdas_cloud_quarter.nvdb";
         auto gridHandle = nanovdb::io::readGrid<nanovdb::CudaDeviceBuffer>(volPath.string());
         g_scene.allocateVolumeGrid(gridHandle);
     }

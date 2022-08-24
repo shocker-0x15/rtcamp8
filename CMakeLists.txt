@@ -14,7 +14,7 @@ set(
     CMAKE_MODULE_PATH
     "${CMAKE_SOURCE_DIR}/cmake"
     ${CMAKE_MODULE_PATH})
-find_package(CUDAToolkit 11.6 REQUIRED)
+find_package(CUDAToolkit 11.7 REQUIRED)
 find_package(OptiX74)
 include("copy_files")
 include("nvcuda_compile_ptx")
@@ -272,7 +272,7 @@ set_property(
     70 75 80 86)
 
 # tiny-cuda-nnがターゲットアーキテクチャーを使うように環境変数を設定する。
-# set(ENV{TCNN_CUDA_ARCHITECTURES} ${TARGET_CUDA_ARCH})
+set(ENV{TCNN_CUDA_ARCHITECTURES} ${TARGET_CUDA_ARCH})
 
 # END: JP: インストールされているGPUの中から最小のCUDAアーキテクチャーを特定し、デフォルトのターゲットアーキテクチャーとする。
 # ----------------------------------------------------------------

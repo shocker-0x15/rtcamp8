@@ -85,6 +85,14 @@ source_group(
     "essentials/GPU kernels" REGULAR_EXPRESSION
     "${CMAKE_CURRENT_SOURCE_DIR}/gpu_kernels/[^/]*\.(h|cu)$")
 
+list(GET CMAKE_CUDA_ARCHITECTURES 0 MIN_GPU_ARCH)
+list(APPEND DEFINITIONS -DTCNN_MIN_GPU_ARCH=${MIN_GPU_ARCH})
+
+list(APPEND CUDA_NVCC_FLAGS "--use_fast_math")
+list(APPEND CUDA_NVCC_FLAGS "--extended-lambda")
+list(APPEND CUDA_NVCC_FLAGS "--expt-relaxed-constexpr")
+list(APPEND CUDA_NVCC_FLAGS "$<$<CONFIG:Debug>:-G>")
+
 add_executable(
     "${TARGET_NAME}"
     ${COMMON_SOURCES}
@@ -96,7 +104,12 @@ add_executable(
     ${CUDA_SOURCES}
 )
 target_compile_features("${TARGET_NAME}" PRIVATE cxx_std_20)
-set_target_properties("${TARGET_NAME}" PROPERTIES CXX_EXTENSIONS OFF)
+set_target_properties("${TARGET_NAME}" PROPERTIES CXX_EXTENSIONS OFF CUDA_EXTENSIOINS OFF)
+target_compile_definitions("${TARGET_NAME}" PRIVATE ${DEFINITIONS})
+target_compile_options(
+    "${TARGET_NAME}" PRIVATE
+    "$<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>"
+)
 target_include_directories(
     "${TARGET_NAME}" PRIVATE
     "../ext/tiny-cuda-nn/dependencies"

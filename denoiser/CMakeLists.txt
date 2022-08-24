@@ -100,6 +100,14 @@ source_group(
     "essentials/GPU kernels" REGULAR_EXPRESSION
     "${CMAKE_CURRENT_SOURCE_DIR}/gpu_kernels/[^/]*\.(h|cu)$")
 
+list(GET CMAKE_CUDA_ARCHITECTURES 0 MIN_GPU_ARCH)
+list(APPEND DEFINITIONS -DTCNN_MIN_GPU_ARCH=${MIN_GPU_ARCH})
+
+list(APPEND CUDA_NVCC_FLAGS "--use_fast_math")
+list(APPEND CUDA_NVCC_FLAGS "--extended-lambda")
+list(APPEND CUDA_NVCC_FLAGS "--expt-relaxed-constexpr")
+list(APPEND CUDA_NVCC_FLAGS "$<$<CONFIG:Debug>:-G>")
+
 add_executable(
     "${TARGET_NAME}"
     ${SELECTIVE_COMMON_SOURCES}
@@ -108,7 +116,8 @@ add_executable(
     ${CUDA_SOURCES}
 )
 target_compile_features("${TARGET_NAME}" PRIVATE cxx_std_20)
-set_target_properties("${TARGET_NAME}" PROPERTIES CXX_EXTENSIONS OFF)
+set_target_properties("${TARGET_NAME}" PROPERTIES CXX_EXTENSIONS OFF CUDA_EXTENSIOINS OFF)
+target_compile_definitions("${TARGET_NAME}" PRIVATE ${DEFINITIONS})
 target_compile_definitions(
     "${TARGET_NAME}" PRIVATE
     "$<$<CONFIG:Debug>:_DEBUG=1>"
@@ -119,6 +128,8 @@ target_compile_options(
     # if (compilerID == MSVC && compilerLanguage != CUDA) set(/MP);
     "$<$<AND:$<C_COMPILER_ID:MSVC>,$<NOT:$<COMPILE_LANGUAGE:CUDA>>>:/MP>"
     "$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<NOT:$<COMPILE_LANGUAGE:CUDA>>>:/MP>"
+
+    "$<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>"
 )
 target_include_directories(
     "${TARGET_NAME}" PRIVATE
