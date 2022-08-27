@@ -1314,46 +1314,101 @@ static void loadTriangleMesh(
 
         const aiMaterial* aiMat = aiscene->mMaterials[matIdx];
         aiString strValue;
-        float color[3];
+        float color[4];
 
         std::string matName;
         if (aiMat->Get(AI_MATKEY_NAME, strValue) == aiReturn_SUCCESS)
             matName = strValue.C_Str();
         hpprintf("%s:\n", matName.c_str());
 
-        std::filesystem::path diffuseColorPath;
-        RGBSpectrum immDiffuseColor;
-        std::filesystem::path specularColorPath;
-        RGBSpectrum immSpecularColor;
-        float immSmoothness;
-        if (aiMat->Get(AI_MATKEY_TEXTURE_DIFFUSE(0), strValue) == aiReturn_SUCCESS) {
-            diffuseColorPath = dirPath / strValue.C_Str();
+        //std::filesystem::path diffuseColorPath;
+        //RGBSpectrum immDiffuseColor;
+        //std::filesystem::path specularColorPath;
+        //RGBSpectrum immSpecularColor;
+        //float immSmoothness;
+        //if (aiMat->Get(AI_MATKEY_TEXTURE_DIFFUSE(0), strValue) == aiReturn_SUCCESS) {
+        //    diffuseColorPath = dirPath / strValue.C_Str();
+        //}
+        //else {
+        //    if (aiMat->Get(AI_MATKEY_COLOR_DIFFUSE, color, nullptr) != aiReturn_SUCCESS) {
+        //        color[0] = 0.0f;
+        //        color[1] = 0.0f;
+        //        color[2] = 0.0f;
+        //    }
+        //    immDiffuseColor = RGBSpectrum(color[0], color[1], color[2]);
+        //}
+
+        //if (aiMat->Get(AI_MATKEY_TEXTURE_SPECULAR(0), strValue) == aiReturn_SUCCESS) {
+        //    specularColorPath = dirPath / strValue.C_Str();
+        //}
+        //else {
+        //    if (aiMat->Get(AI_MATKEY_COLOR_SPECULAR, color, nullptr) != aiReturn_SUCCESS) {
+        //        color[0] = 0.0f;
+        //        color[1] = 0.0f;
+        //        color[2] = 0.0f;
+        //    }
+        //    immSpecularColor = RGBSpectrum(color[0], color[1], color[2]);
+        //}
+
+        //if (aiMat->Get(AI_MATKEY_SHININESS, &immSmoothness, nullptr) != aiReturn_SUCCESS)
+        //    immSmoothness = 0.0f;
+        //immSmoothness = std::sqrt(immSmoothness);
+        //immSmoothness = immSmoothness / 11.0f/*30.0f*/;
+
+        //Ref<SurfaceMaterial> surfMat;
+        //if constexpr (forceLambertBRDF) {
+        //    surfMat = createLambertianMaterial(
+        //        diffuseColorPath, immDiffuseColor);
+        //}
+        //else {
+        //    // JP: diffuseテクスチャーとしてベースカラー + 不透明度
+        //    //     specularテクスチャーとしてオクルージョン、ラフネス、メタリック
+        //    //     が格納されていると仮定している。
+        //    // EN: We assume diffuse texture as base color + opacity,
+        //    //     specular texture as occlusion, roughness, metallic.
+        //    surfMat = createSimplePBRMaterial(
+        //        diffuseColorPath, immDiffuseColor, 1.0f,
+        //        specularColorPath, float3(0.0f, 0.5f, 0.0f));
+        //}
+
+        std::filesystem::path baseColorTexturePath;
+        RGBSpectrum immBaseColor = RGBSpectrum(1.0f, 0.0f, 1.0f);
+        if (aiMat->GetTexture(AI_MATKEY_BASE_COLOR_TEXTURE, &strValue) == aiReturn_SUCCESS) {
+            baseColorTexturePath = dirPath / strValue.C_Str();
         }
-        else {
-            if (aiMat->Get(AI_MATKEY_COLOR_DIFFUSE, color, nullptr) != aiReturn_SUCCESS) {
-                color[0] = 0.0f;
-                color[1] = 0.0f;
-                color[2] = 0.0f;
-            }
-            immDiffuseColor = RGBSpectrum(color[0], color[1], color[2]);
+        else if (aiMat->Get(AI_MATKEY_BASE_COLOR, color, nullptr) == aiReturn_SUCCESS) {
+            immBaseColor = RGBSpectrum(color[0], color[1], color[2]);
         }
 
-        if (aiMat->Get(AI_MATKEY_TEXTURE_SPECULAR(0), strValue) == aiReturn_SUCCESS) {
-            specularColorPath = dirPath / strValue.C_Str();
+        std::filesystem::path ormTexturePath;
+        float3 immORM = make_float3(0.0f, 0.5f, 0.0f);
+        if (aiMat->GetTexture(AI_MATKEY_ROUGHNESS_TEXTURE, &strValue) == aiReturn_SUCCESS) {
+            ormTexturePath = dirPath / strValue.C_Str();
+            Assert(aiMat->GetTexture(AI_MATKEY_METALLIC_TEXTURE, &strValue) == aiReturn_SUCCESS,
+                   "No metallic texture.");
+            Assert(ormTexturePath == dirPath / strValue.C_Str(),
+                   "Metallic and roughness textures are different.");
         }
         else {
-            if (aiMat->Get(AI_MATKEY_COLOR_SPECULAR, color, nullptr) != aiReturn_SUCCESS) {
-                color[0] = 0.0f;
-                color[1] = 0.0f;
-                color[2] = 0.0f;
-            }
-            immSpecularColor = RGBSpectrum(color[0], color[1], color[2]);
+            aiMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, &immORM.y, nullptr);
+            aiMat->Get(AI_MATKEY_METALLIC_FACTOR, &immORM.z, nullptr);
         }
 
-        if (aiMat->Get(AI_MATKEY_SHININESS, &immSmoothness, nullptr) != aiReturn_SUCCESS)
-            immSmoothness = 0.0f;
-        immSmoothness = std::sqrt(immSmoothness);
-        immSmoothness = immSmoothness / 11.0f/*30.0f*/;
+        Ref<SurfaceMaterial> surfMat;
+        if constexpr (forceLambertBRDF) {
+            surfMat = createLambertianMaterial(
+                baseColorTexturePath, immBaseColor);
+        }
+        else {
+            // JP: diffuseテクスチャーとしてベースカラー + 不透明度
+            //     specularテクスチャーとしてオクルージョン、ラフネス、メタリック
+            //     が格納されていると仮定している。
+            // EN: We assume diffuse texture as base color + opacity,
+            //     specular texture as occlusion, roughness, metallic.
+            surfMat = createSimplePBRMaterial(
+                baseColorTexturePath, immBaseColor, 1.0f,
+                ormTexturePath, immORM);
+        }
 
         std::filesystem::path normalPath;
         if (aiMat->Get(AI_MATKEY_TEXTURE_HEIGHT(0), strValue) == aiReturn_SUCCESS)
@@ -1365,22 +1420,6 @@ static void loadTriangleMesh(
             emittancePath = dirPath / strValue.C_Str();
         else if (aiMat->Get(AI_MATKEY_COLOR_EMISSIVE, color, nullptr) == aiReturn_SUCCESS)
             immEmittance = RGBSpectrum(color[0], color[1], color[2]);
-
-        Ref<SurfaceMaterial> surfMat;
-        if constexpr (forceLambertBRDF) {
-            surfMat = createLambertianMaterial(
-                diffuseColorPath, immDiffuseColor);
-        }
-        else {
-            // JP: diffuseテクスチャーとしてベースカラー + 不透明度
-            //     specularテクスチャーとしてオクルージョン、ラフネス、メタリック
-            //     が格納されていると仮定している。
-            // EN: We assume diffuse texture as base color + opacity,
-            //     specular texture as occlusion, roughness, metallic.
-            surfMat = createSimplePBRMaterial(
-                diffuseColorPath, immDiffuseColor, 1.0f,
-                specularColorPath, float3(0.0f, 0.5f, 0.0f));
-        }
 
         bool needsDegamma;
         bool isHDR;
@@ -1664,6 +1703,7 @@ struct InstanceInfo {
 };
 
 struct SceneLoadingContext {
+    std::filesystem::path sceneFileDir;
     uint32_t lineIndex;
     std::string line;
 
@@ -1672,6 +1712,8 @@ struct SceneLoadingContext {
     float timeBegin;
     float timeEnd;
     uint32_t fps;
+
+    std::filesystem::path volFilePath;
 
     std::string envName;
     EnvironmentInfo envInfo;
@@ -1733,6 +1775,8 @@ std::map<std::string, lineFunc> processors = {
                 envName.c_str());
 
             std::filesystem::path envFilePath = m[1].str();
+            if (envFilePath.is_relative())
+                envFilePath = context.sceneFileDir / envFilePath;
             throwRuntimeErrorAtLine(
                 std::filesystem::exists(envFilePath), context.lineIndex + 1,
                 "Mesh %s does not exist.", envFilePath.string().c_str());
@@ -1983,6 +2027,8 @@ std::map<std::string, lineFunc> processors = {
                 meshName.c_str());
 
             std::filesystem::path meshFilePath = m[1].str();
+            if (meshFilePath.is_relative())
+                meshFilePath = context.sceneFileDir / meshFilePath;
             throwRuntimeErrorAtLine(
                 std::filesystem::exists(meshFilePath), context.lineIndex + 1,
                 "Mesh %s does not exist.", meshFilePath.string().c_str());
@@ -2082,6 +2128,23 @@ std::map<std::string, lineFunc> processors = {
             instInfo.nextKeyPosition = Point3D::Zero();
             instInfo.hasCyclicAnim = false;
             context.instInfos[instName] = instInfo;
+        }
+    },
+    {
+        "volume",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "volume";
+            static const std::regex re = makeRegex({cmd, reQuotedPath});
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::filesystem::path volFilePath = m[1].str();
+            if (volFilePath.is_relative())
+                volFilePath = context.sceneFileDir / volFilePath;
+            throwRuntimeErrorAtLine(
+                std::filesystem::exists(volFilePath), context.lineIndex + 1,
+                "Volume %s does not exist.", volFilePath.string().c_str());
+
+            context.volFilePath = volFilePath;
         }
     },
     {
@@ -2190,7 +2253,10 @@ std::map<std::string, lineFunc> processors = {
 
 
 void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* renderConfigs) {
-    throwRuntimeError(std::filesystem::exists(sceneFilePath), "Scene file does not exist!");
+    std::filesystem::path absScenePath = sceneFilePath;
+    if (absScenePath.is_relative())
+        absScenePath = std::filesystem::current_path() / absScenePath;
+    throwRuntimeError(std::filesystem::exists(absScenePath), "Scene file does not exist!");
 
     std::vector<std::string> lines;
     {
@@ -2220,6 +2286,7 @@ void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* render
     }
 
     SceneLoadingContext context;
+    context.sceneFileDir = absScenePath.parent_path();
     context.lineIndex = -1;
     for (const std::string &line : lines) {
         ++context.lineIndex;
@@ -2345,8 +2412,7 @@ void loadScene(const std::filesystem::path &sceneFilePath, RenderConfigs* render
 
 
     {
-        std::filesystem::path volPath = getExecutableDirectory() / "wdas_cloud_quarter.nvdb";
-        auto gridHandle = nanovdb::io::readGrid<nanovdb::CudaDeviceBuffer>(volPath.string());
+        auto gridHandle = nanovdb::io::readGrid<nanovdb::CudaDeviceBuffer>(context.volFilePath.string());
         g_scene.allocateVolumeGrid(gridHandle);
     }
 }
