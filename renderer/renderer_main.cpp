@@ -987,6 +987,42 @@ static int32_t runGuiApp() {
             resetAccumulation |= ImGui::SliderFloat(
                 "Forwardness", &scatteringForwardness, -0.99f, 0.99f);
 
+            ImGui::Separator();
+
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("Screen Shot:");
+            ImGui::SameLine();
+            bool saveSS_LDR = ImGui::Button("SDR");
+            ImGui::SameLine();
+            bool saveSS_HDR = ImGui::Button("HDR");
+            ImGui::SameLine();
+            if (ImGui::Button("Both"))
+                saveSS_LDR = saveSS_HDR = true;
+            if (saveSS_LDR || saveSS_HDR) {
+                CUDADRV_CHECK(cuStreamSynchronize(curCuStream));
+                auto rawImage = new float[4 * renderTargetSizeX * renderTargetSizeY];
+                glGetTextureSubImage(
+                    gfxOutputBuffer.getHandle(), 0,
+                    0, 0, 0, renderTargetSizeX, renderTargetSizeY, 1,
+                    GL_RGBA, GL_FLOAT, sizeof(float4) * renderTargetSizeX * renderTargetSizeY, rawImage);
+
+                float brightness = 0.0f;
+                bool applyToneMapAndGammaCorrection = true;
+                if (saveSS_LDR) {
+                    SDRImageSaverConfig config;
+                    config.brightnessScale = std::pow(10.0f, brightness);
+                    config.applyToneMap = applyToneMapAndGammaCorrection;
+                    config.apply_sRGB_gammaCorrection = applyToneMapAndGammaCorrection;
+                    config.alphaForOverride = 1.0f;
+                    saveImage("output.png", renderTargetSizeX, renderTargetSizeY, 4, rawImage,
+                              config);
+                }
+                if (saveSS_HDR)
+                    saveImageHDR("output.exr", renderTargetSizeX, renderTargetSizeY, 4,
+                                 std::pow(10.0f, brightness), rawImage);
+                delete[] rawImage;
+            }
+
             ImGui::End();
         }
 
