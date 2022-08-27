@@ -210,7 +210,7 @@ CUDA_DEVICE_FUNCTION CUDA_INLINE float arhosekskymodel_solar_radiance(
             gamma,
             wavelength);
 
-    return  direct_radiance + inscattered_radiance;
+    return direct_radiance + inscattered_radiance;
 }
 
 // ----------------------------------------------------------------
@@ -239,6 +239,7 @@ CUDA_DEVICE_KERNEL void generateArHosekSkyEnvironmentalTexture(
         for (int bandIdx = 0; bandIdx < ArHosekSkyModelCMFSet::numBands; ++bandIdx) {
             ArHosekSkyModelState &state = states[bandIdx];
             float centerWavelength = cmfSet.centerWavelengths[bandIdx];
+            centerWavelength = clamp(centerWavelength, 320.0f, 720.0f);
             float value;
             if (gamma < state.solar_radius && !inLowerHemisphere)
                 value = arhosekskymodel_solar_radiance(&state, mTheta, gamma, centerWavelength);
