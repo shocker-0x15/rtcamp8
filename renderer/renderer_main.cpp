@@ -63,6 +63,8 @@ namespace ImGui {
 
 namespace rtc8 {
 
+static StopWatchHiRes g_globalTimer;
+
 static cudau::Array rngBuffer;
 static cudau::Array accumBuffer;
 static glu::Texture2D gfxOutputBuffer;
@@ -353,6 +355,8 @@ static Point3D g_cameraPosition;
 
 static bool g_guiMode = true;
 static std::filesystem::path g_sceneFilePath;
+static float g_playbackSpeed = 1.0f;
+static uint32_t g_spp = 8;
 
 
 
@@ -905,6 +909,16 @@ static int32_t runGuiApp() {
                 "Cur. Time", &timePoint,
                 renderConfigs.timeBegin, renderConfigs.timeEnd,
                 static_cast<float>(1) / renderConfigs.fps, 0.0f);
+            if (timeChanged) {
+                activeCamera = renderConfigs.cameras.at(renderConfigs.activeCameraInfos.begin()->name);
+                for (auto it = renderConfigs.activeCameraInfos.begin();
+                     it != renderConfigs.activeCameraInfos.end(); ++it) {
+                    if (timePoint >= it->timePoint)
+                        activeCamera = renderConfigs.cameras.at(it->name);
+                    else
+                        break;
+                }
+            }
 
             ImGui::InputFloat3("Cam. Pos.", reinterpret_cast<float*>(&g_cameraPosition));
             ImGui::InputFloat4("Cam. Ori.", reinterpret_cast<float*>(&g_tempCameraOrientation));
@@ -981,7 +995,7 @@ static int32_t runGuiApp() {
                 "##RadianceScale", &log10RadianceScale, -5, 5, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 
             resetAccumulation |= ImGui::SliderFloat(
-                "Density Coeff.", &densityCoeff, 0.01f, 1.0f);
+                "Density Coeff.", &densityCoeff, 0.01f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
             resetAccumulation |= ImGui::SliderFloat(
                 "Albedo", &scatteringAlbedo, 0.0f, 0.999f);
             resetAccumulation |= ImGui::SliderFloat(
@@ -1007,16 +1021,16 @@ static int32_t runGuiApp() {
                     GL_RGBA, GL_FLOAT, sizeof(float4) * renderTargetSizeX * renderTargetSizeY, rawImage);
 
                 float brightness = 0.0f;
-                bool applyToneMapAndGammaCorrection = true;
                 if (saveSS_LDR) {
                     SDRImageSaverConfig config;
                     config.brightnessScale = std::pow(10.0f, brightness);
-                    config.applyToneMap = applyToneMapAndGammaCorrection;
-                    config.apply_sRGB_gammaCorrection = applyToneMapAndGammaCorrection;
+                    config.applyToneMap = false;
+                    config.apply_sRGB_gammaCorrection = true;
                     config.alphaForOverride = 1.0f;
                     saveImage("output.png", renderTargetSizeX, renderTargetSizeY, 4, rawImage,
                               config);
                 }
+                accumBuffer.read(rawImage, 4 * renderTargetSizeX * renderTargetSizeY, 0);
                 if (saveSS_HDR)
                     saveImageHDR("output.exr", renderTargetSizeX, renderTargetSizeY, 4,
                                  std::pow(10.0f, brightness), rawImage);
@@ -1422,17 +1436,19 @@ static int32_t runGuiApp() {
     //for (int bufIdx = 0; bufIdx < 2; ++bufIdx)
     //    CUDADRV_CHECK(cuStreamDestroy(cuStreams[bufIdx]));
 
-    //g_scene.finalize();
-    //g_gpuEnv.finalize();
-
-	return 0;
+    return 0;
 }
 
 
 
 static int32_t runApp() {
+    hpprintf("Loading a scene:\n");
     RenderConfigs renderConfigs;
     loadScene(g_sceneFilePath, &renderConfigs);
+    hpprintf("Loading a scene: done. (tp: %.3f [s])\n",
+             g_globalTimer.getElapsedFromRoot(StopWatchDurationType::Milliseconds) * 1e-3f);
+
+    hpprintf("Set up misc...");
 
     CUstream cuStream;
     CUDADRV_CHECK(cuStreamCreate(&cuStream, 0));
@@ -1457,9 +1473,11 @@ static int32_t runApp() {
     if (renderConfigs.environment)
         perFramePlpOnHost.enableEnvironmentalLight = true;
 
+    uint32_t activeCamIdx = 0;
+    const uint32_t numActiveCams = renderConfigs.activeCameraInfos.size();
     Ref<Camera> activeCamera;
     {
-        const ActiveCameraInfo &activeCamInfo = renderConfigs.activeCameraInfos[0];
+        const ActiveCameraInfo &activeCamInfo = renderConfigs.activeCameraInfos[activeCamIdx];
         activeCamera = renderConfigs.cameras.at(activeCamInfo.name);
     }
 
@@ -1481,13 +1499,31 @@ static int32_t runApp() {
 
     std::mt19937 perFrameRng(72139121);
 
+    const uint32_t numSamplesPerFrame = g_spp;
+
+    hpprintf(" done. (tp: %.3f [s])\n",
+             g_globalTimer.getElapsedFromRoot(StopWatchDurationType::Milliseconds) * 1e-3f);
+
     uint32_t timeStepIndex = 0;
     while (true) {
         float timePoint =
-            renderConfigs.timeBegin + static_cast<float>(timeStepIndex) / renderConfigs.fps;
+            renderConfigs.timeBegin
+            + g_playbackSpeed * static_cast<float>(timeStepIndex) / renderConfigs.fps;
         if (timePoint > renderConfigs.timeEnd)
             break;
 
+        hpprintf("Frame %u (Time: %.3f) (tp: %.3f [s])\n",
+                 timeStepIndex, timePoint,
+                 g_globalTimer.getElapsedFromRoot(StopWatchDurationType::Milliseconds) * 1e-3f);
+
+        const ActiveCameraInfo &nextActiveCamInfo =
+            renderConfigs.activeCameraInfos[std::min(activeCamIdx + 1, numActiveCams - 1)];
+        if (timePoint >= nextActiveCamInfo.timePoint) {
+            Ref<Camera> nextActiveCamera = renderConfigs.cameras.at(nextActiveCamInfo.name);
+            if (nextActiveCamera != activeCamera)
+                ++activeCamIdx;
+            activeCamera = nextActiveCamera;
+        }
         activeCamera->setUpDeviceData(&perFramePlpOnHost.camera, timePoint);
 
         perFramePlpOnHost.instances = g_scene.getInstancesOnDevice();
@@ -1578,7 +1614,6 @@ static int32_t runApp() {
             }
         }
 
-        uint32_t numSamplesPerFrame = 8;
         for (int i = 0; i < numSamplesPerFrame; ++i) {
             CUDADRV_CHECK(cuMemcpyHtoDAsync(
                 perFramePlpOnDevice + offsetof(shared::PerFramePipelineLaunchParameters, numAccumFrames),
@@ -1651,6 +1686,22 @@ static void parseCommandline(int32_t argc, const char* argv[]) {
             g_sceneFilePath = argv[i + 1];
             i += 1;
         }
+        else if (strncmp(arg, "-t-mul", 7) == 0) {
+            if (i + 1 >= argc) {
+                hpprintf("Invalid option.\n");
+                exit(EXIT_FAILURE);
+            }
+            g_playbackSpeed = std::atof(argv[i + 1]);
+            i += 1;
+        }
+        else if (strncmp(arg, "-spp", 5) == 0) {
+            if (i + 1 >= argc) {
+                hpprintf("Invalid option.\n");
+                exit(EXIT_FAILURE);
+            }
+            g_spp = std::atoi(argv[i + 1]);
+            i += 1;
+        }
         else {
             printf("Unknown option.\n");
             exit(EXIT_FAILURE);
@@ -1659,6 +1710,8 @@ static void parseCommandline(int32_t argc, const char* argv[]) {
 }
 
 int32_t mainFunc(int32_t argc, const char* argv[]) {
+    g_globalTimer.start();
+
     parseCommandline(argc, argv);
 
     g_gpuEnv.initialize();
@@ -1670,10 +1723,19 @@ int32_t mainFunc(int32_t argc, const char* argv[]) {
 
     g_scene.initialize();
 
+    int32_t ret;
     if (g_guiMode)
-        return runGuiApp();
+        ret = runGuiApp();
     else
-        return runApp();
+        ret = runApp();
+
+    //g_scene.finalize();
+    g_gpuEnv.finalize();
+
+    hpprintf("End of App (tp: %.3f [s])\n",
+             g_globalTimer.getElapsedFromRoot(StopWatchDurationType::Milliseconds) * 1e-3f);
+
+    return ret;
 }
 
 } // namespace rtc8

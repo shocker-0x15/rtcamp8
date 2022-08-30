@@ -22,10 +22,9 @@ CUDA_DEVICE_KERNEL void prepareNRC(
             uint32_t prevNumTrainingData = *(plp.s->numTrainingData[prevBufIdx]);
             float r = std::sqrt(static_cast<float>(prevNumTrainingData) / numTrainingDataPerFrame);
             int2 curTrainImageSize = *(plp.s->trainImageSize[prevBufIdx]);
-            newTrainImageSize = make_int2(
-                static_cast<uint32_t>(curTrainImageSize.x / r),
-                static_cast<uint32_t>(curTrainImageSize.y / r));
-            newTrainImageSize = min(newTrainImageSize, plp.s->imageSize);
+            newTrainImageSize = make_int2(min(
+                make_float2(curTrainImageSize.x / r, curTrainImageSize.y / r),
+                make_float2(plp.s->imageSize)));
         }
         *(plp.s->trainImageSize[bufIdx]) = newTrainImageSize;
 

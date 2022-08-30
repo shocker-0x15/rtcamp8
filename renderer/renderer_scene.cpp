@@ -2000,7 +2000,7 @@ std::map<std::string, lineFunc> processors = {
 
             float timePoint = std::stof(m[2].str().c_str());
             throwRuntimeErrorAtLine(
-                timePoint >= 0.0f, context.lineIndex + 1,
+                std::isfinite(timePoint), context.lineIndex + 1,
                 "Invalid timePoint: %f", timePoint);
 
             CameraInfo &camInfo = context.camInfos.at(tgtName);
@@ -2011,6 +2011,30 @@ std::map<std::string, lineFunc> processors = {
             state.up = camInfo.nextKeyUp;
             state.fovY = camInfo.nextKeyFovY;
             camInfo.keyStates.push_back(state);
+        }
+    },
+    {
+        "active-cam",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "active-cam";
+            static const std::regex re = makeRegex({cmd, reString, reReal});
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string tgtName = m[1].str();
+            throwRuntimeErrorAtLine(
+                context.camInfos.contains(tgtName), context.lineIndex + 1,
+                "Camera %s does not exist.",
+                tgtName.c_str());
+
+            float timePoint = std::stof(m[2].str().c_str());
+            throwRuntimeErrorAtLine(
+                std::isfinite(timePoint), context.lineIndex + 1,
+                "Invalid timePoint: %f", timePoint);
+
+            ActiveCameraInfo activeCamInfo;
+            activeCamInfo.timePoint = timePoint;
+            activeCamInfo.name = tgtName;
+            context.activeCamInfos.push_back(activeCamInfo);
         }
     },
     {
@@ -2184,6 +2208,35 @@ std::map<std::string, lineFunc> processors = {
         }
     },
     {
+        "orient",
+        [](SceneLoadingContext &context) {
+            static const char* cmd = "orient";
+            static const std::regex re = makeRegex({
+                cmd, reString, reReal, reReal, reReal, reReal, reReal , reReal });
+            std::smatch m = testRegex(re, cmd, context.lineIndex, context.line);
+
+            std::string instName = m[1].str();
+            throwRuntimeErrorAtLine(
+                context.instInfos.contains(instName), context.lineIndex + 1,
+                "Instance %s does not exist.",
+                instName.c_str());
+
+            Vector3D dir(
+                std::stof(m[2].str().c_str()),
+                std::stof(m[3].str().c_str()),
+                std::stof(m[4].str().c_str()));
+            dir.normalize();
+            Vector3D upDir(
+                std::stof(m[5].str().c_str()),
+                std::stof(m[6].str().c_str()),
+                std::stof(m[7].str().c_str()));
+            upDir.normalize();
+            Quaternion q = conjugate(qLookAt(dir, upDir)) * qRotateY(pi_v<float>);
+
+            context.instInfos.at(instName).nextKeyOrientation = q;
+        }
+    },
+    {
         "trans",
         [](SceneLoadingContext &context) {
             static const char* cmd = "trans";
@@ -2219,7 +2272,7 @@ std::map<std::string, lineFunc> processors = {
 
             float timePoint = std::stof(m[2].str().c_str());
             throwRuntimeErrorAtLine(
-                timePoint >= 0.0f, context.lineIndex + 1,
+                std::isfinite(timePoint), context.lineIndex + 1,
                 "Invalid timePoint: %f", timePoint);
 
             InstanceInfo &instInfo = context.instInfos.at(tgtName);

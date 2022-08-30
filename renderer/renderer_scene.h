@@ -793,14 +793,57 @@ class Instance {
             if (keyState.timePoint <= timePoint)
                 idx += d;
         }
-        KeyInstanceState states[2];
-        states[0] = m_keyStates[idx];
-        states[1] = m_keyStates[std::min(static_cast<uint32_t>(idx) + 1, numStates - 1)];
-        float t = safeDivide(timePoint - states[0].timePoint, states[1].timePoint - states[0].timePoint);
+        //KeyInstanceState states[2];
+        //states[0] = m_keyStates[idx];
+        //states[1] = m_keyStates[std::min(static_cast<uint32_t>(idx) + 1, numStates - 1)];
+        //float t = safeDivide(timePoint - states[0].timePoint, states[1].timePoint - states[0].timePoint);
+        //t = clamp(t, 0.0f, 1.0f);
+        //*scale = lerp(states[0].scale, states[1].scale, t);
+        //*orientation = slerp(states[0].orientation, states[1].orientation, t);
+        //*position = lerp(states[0].position, states[1].position, t);
+
+        KeyInstanceState states[4];
+        states[1] = m_keyStates[idx];
+        states[2] = m_keyStates[
+            m_hasCyclicAnim ?
+                (idx + 1) % numStates :
+                std::min(idx + 1, static_cast<int32_t>(numStates - 1))];
+        if (idx - 1 >= 0) {
+            states[0] = m_keyStates[idx - 1];
+        }
+        else {
+            // states[0] = states[1] - (states[2] - states[1])
+            states[0].position = Point3D(2 * states[1].position - states[2].position);
+            states[0].orientation = slerp(states[2].orientation, states[1].orientation, 2.0f, true);
+            states[0].scale = 2 * states[1].scale - states[2].scale;
+        }
+
+        if (idx + 2 < numStates) {
+            states[3] = m_keyStates[idx + 2];
+        }
+        else {
+            // states[3] = states[2] + (states[2] - states[1])
+            states[3].position = Point3D(2 * states[2].position - states[1].position);
+            states[3].orientation = slerp(states[1].orientation, states[2].orientation, 2.0f, true);
+            states[3].scale = 2 * states[2].scale - states[1].scale;
+        }
+
+        float t = safeDivide(timePoint - states[1].timePoint, states[2].timePoint - states[1].timePoint);
         t = clamp(t, 0.0f, 1.0f);
-        *scale = lerp(states[0].scale, states[1].scale, t);
-        *orientation = slerp(states[0].orientation, states[1].orientation, t);
-        *position = lerp(states[0].position, states[1].position, t);
+        Vector3D posA4(states[1].position);
+        Vector3D posA3(0.5f * (states[2].position - states[0].position));
+        Vector3D posA1(
+            0.5f * (states[3].position - states[1].position)
+            - 2 * Vector3D(states[2].position)
+            + posA3 + 2 * posA4);
+        Vector3D posA2(
+            3 * states[2].position
+            - 0.5f * (states[3].position - states[1].position)
+            - 2 * posA3 - 3 * posA4);
+        *position = Point3D(
+            posA1 * pow3(t) + posA2 * pow2(t) + posA3 * t + posA4);
+        *scale = lerp(states[1].scale, states[2].scale, t);
+        *orientation = slerp(states[1].orientation, states[2].orientation, t, true);
     }
 
 public:
@@ -897,16 +940,45 @@ public:
             if (keyState.timePoint <= timePoint)
                 idx += d;
         }
-        KeyCameraState states[2];
-        states[0] = m_keyStates[idx];
-        states[1] = m_keyStates[std::min(static_cast<uint32_t>(idx) + 1, numStates - 1)];
-        float t = safeDivide(timePoint - states[0].timePoint, states[1].timePoint - states[0].timePoint);
+
+        KeyCameraState states[4];
+        states[1] = m_keyStates[idx];
+        states[2] = m_keyStates[std::min(idx + 1, static_cast<int32_t>(numStates - 1))];
+        if (idx - 1 >= 0) {
+            states[0] = m_keyStates[idx - 1];
+        }
+        else {
+            // states[0] = states[1] - (states[2] - states[1])
+            states[0].position = Point3D(2 * states[1].position - states[2].position);
+        }
+
+        if (idx + 2 < numStates) {
+            states[3] = m_keyStates[idx + 2];
+        }
+        else {
+            // states[3] = states[2] + (states[2] - states[1])
+            states[3].position = Point3D(2 * states[2].position - states[1].position);
+        }
+
+        float t = safeDivide(timePoint - states[1].timePoint, states[2].timePoint - states[1].timePoint);
         t = clamp(t, 0.0f, 1.0f);
-        Point3D position = lerp(states[0].position, states[1].position, t);
-        Quaternion ori0 = qLookAt(states[0].positionLookAt - states[0].position, states[0].up);
-        Quaternion ori1 = qLookAt(states[1].positionLookAt - states[1].position, states[1].up);
+        Vector3D posA4(states[1].position);
+        Vector3D posA3(0.5f * (states[2].position - states[0].position));
+        Vector3D posA1(
+            0.5f * (states[3].position - states[1].position)
+            - 2 * Vector3D(states[2].position)
+            + posA3 + 2 * posA4);
+        Vector3D posA2(
+            3 * states[2].position
+            - 0.5f * (states[3].position - states[1].position)
+            - 2 * posA3 - 3 * posA4);
+        Point3D position = Point3D(
+            posA1 * pow3(t) + posA2 * pow2(t) + posA3 * t + posA4);
+        Quaternion ori0 = qLookAt(states[1].positionLookAt - states[1].position, states[1].up);
+        Quaternion ori1 = qLookAt(states[2].positionLookAt - states[2].position, states[2].up);
         Quaternion orientation = slerp(ori0, ori1, t, true);
-        float fovY = lerp(states[0].fovY, states[1].fovY, t);
+        float fovY = lerp(states[1].fovY, states[2].fovY, t);
+
         deviceData->position = position;
         deviceData->orientation = conjugate(orientation)/* * qRotateY(pi_v<float>)*/;
         deviceData->fovY = fovY * pi_v<float> / 180;

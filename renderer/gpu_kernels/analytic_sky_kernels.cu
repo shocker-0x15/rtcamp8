@@ -267,7 +267,7 @@ CUDA_DEVICE_KERNEL void generateArHosekSkyEnvironmentalTexture(
 
     if (inLowerHemisphere) {
         RGBSpectrum skyValue = rgb;
-        RGBSpectrum seaValue = 0.5f * RGBSpectrum(0.01f, 0.01f, 0.1f);
+        RGBSpectrum seaValue = 0.5f * RGBSpectrum(0.01f, 0.01f, lerp(0.01f, 0.1f, sunDirection.y));
 
         float t = std::cos(mTheta);
         rgb = lerp(skyValue, seaValue, std::pow(t, 1 / 5.0f));

@@ -621,7 +621,7 @@ public:
                       reinterpret_cast<const float*>(item.data.get()), item.config);
             uint64_t saveTime = cpuTimer.getElapsed(StopWatchDurationType::Milliseconds);
             cpuTimer.reset();
-            hpprintf("Save %s: %.3f [s]\n", item.filePath.string().c_str(), saveTime * 1e-3f);
+            hpprintf("Save %s: %.3f [s] (Background)\n", item.filePath.string().c_str(), saveTime * 1e-3f);
         }
     }
 

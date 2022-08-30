@@ -484,6 +484,15 @@ CUDA_COMMON_FUNCTION CUDA_INLINE uint2 max(const uint2 &v0, const uint2 &v1) {
                       rtc8::max(v0.y, v1.y));
 }
 
+CUDA_COMMON_FUNCTION CUDA_INLINE float2 min(const float2 &v0, const float2 &v1) {
+    return make_float2(rtc8::min(v0.x, v1.x),
+                       rtc8::min(v0.y, v1.y));
+}
+CUDA_COMMON_FUNCTION CUDA_INLINE float2 max(const float2 &v0, const float2 &v1) {
+    return make_float2(rtc8::max(v0.x, v1.x),
+                       rtc8::max(v0.y, v1.y));
+}
+
 CUDA_COMMON_FUNCTION CUDA_INLINE float3 min(const float3 &v0, const float3 &v1) {
     return make_float3(std::fmin(v0.x, v1.x),
                        std::fmin(v0.y, v1.y),

@@ -26,7 +26,16 @@ CUDA_DEVICE_KERNEL void applyToneMap() {
         return;
 
     RGBSpectrum accumResult = plp.s->accumBuffer.read(launchIndex);
+    constexpr float gamma = 1.0f / 0.6f;
+    accumResult.r = std::pow(accumResult.r, gamma);
+    accumResult.g = std::pow(accumResult.g, gamma);
+    accumResult.b = std::pow(accumResult.b, gamma);
     RGBSpectrum output = applySimpleToneMap(accumResult, /*plp.f->brighness*/1.0f);
+
+    //constexpr float gamma = 1.0f / 0.6f;
+    //output.r = std::pow(output.r, gamma);
+    //output.g = std::pow(output.g, gamma);
+    //output.b = std::pow(output.b, gamma);
 
     plp.f->outputBuffer.write(launchIndex, output);
 }
